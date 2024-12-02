@@ -187,12 +187,27 @@ if __name__ == "__main__":
     parser.add_argument("--len_box", type=int, default=256)
     parser.add_argument("--skip_per_dir", type=int, default=256)
     parser.add_argument("--augmentation_n", type=int, default=0)
-    parser.add_argument("--rotate_inference", type=bool, default=False)
-    parser.add_argument("--use_ecnn", type=bool, default=False)
+    parser.add_argument("--equivariance_case", type=str, choices=["none", "oriented_boxes", "ecnn"], default="none",
+        help=(
+            "Specifies the equivariance configuration:\n"
+            "- 'none': No equivariance is applied.\n"
+            "- 'oriented_boxes': Enables rotation during training and inference.\n"
+            "- 'ecnn': Uses equivariant UNet.\n"
+        )
+    )
     parser.add_argument("--mask", type=bool, default=False)
     parser.add_argument("--rotate_inputs", type=int, default=0)
     parser.add_argument("--data_n", type=int, default=-1)
     args = parser.parse_args()
+    
+    #set equivariance case internally
+    args.rotate_inference = args.equivariance_case == "oriented_boxes"
+    args.use_ecnn = args.equivariance_case == "ecnn"
+    
+    #set augmentation_n to 0 if one of the other equivariance methods was chosen
+    if args.equivariance_case != "none":
+        args.augmentation_n = 0
+    
     settings = SettingsTraining(**vars(args))
 
     settings = prepare_data_and_paths(settings)

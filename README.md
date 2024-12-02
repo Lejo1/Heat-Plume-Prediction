@@ -45,10 +45,11 @@
 - **New Arguments:**
   - `--augmentation_n`: Adds augmented versions of each data point by rotating each data point with `augmentation_n` angles uniformly sampled from (0°, 360°). <br>
     If `augmentation_n < 0`, it adds versions rotated by 90°, 180°, and 270°. (Default: `0`)
-  - `--rotate_inference`: 
-    - **During Training:** Aligns all data points with a chosen direction. (Default: `False`)
-    - **During Inference:** Rotates data points for inference to align with a chosen direction and rotates the predictions back. (Default: `False`)
-  - `--use_ecnn`: Enables the use of equivariant UNet. (Default: `False`)
+  - `--equivariance_case`: 
+      - `none` : No equivariance is applied. (`augmentation_n` can be used to introduce equivariance)
+      - `oriented_boxes` : Rotate data points to align with a specific direction for training\inference. (`augmentation_n` will be set to 0)
+      -  `ecnn` : Use equivariant CNN. (`augmentation_n` will be set to 0)
+     (Default: `none`)
   - `--data_n`: Restricts the dataset to `data_n` data points. The test set remains unaffected. <br>
     Setting `data_n <= 0` or larger than the number of data points results in no restriction. (Default: `-1`)
 
@@ -56,7 +57,7 @@
   - `--mask`: Applies a mask to all data. (Default: `False`)
   - `--rotate_inputs`: Rotates all data by the specified angle. (Default: `0`)
 
-- **Logging with wandb**
+- **Logging with Weights & Biases**
   - login to wandb account with `wandb login`.
   - In `main_hyperparam.py` set wandb setting (l.23-l.36) as desired.
   - Run `main_hyperparam.py` the same way as `main.py`.

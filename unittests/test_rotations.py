@@ -45,7 +45,7 @@ def test_rotation():
     assert torch.allclose(data, expected), "Problem detected in label rotation!"
 
 def test_get_rot_angle():
-    # rotation < 180
+    # rotation < 180°
     # Fixture
     a = [1,0]
     b = [0,1]
@@ -56,10 +56,10 @@ def test_get_rot_angle():
     calc_angle = rt.get_rotation_angle(a, b)
 
     # Test
-    assert calc_angle == exp_angle, "Problem detected in finding angle < 180"
+    assert calc_angle == exp_angle, "Problem detected in finding angle < 180°"
 
 
-    # rotation > 180
+    # rotation > 180°
     # Fixture
     a = [0,1]
     b = [1,0]
@@ -70,7 +70,7 @@ def test_get_rot_angle():
     calc_angle = rt.get_rotation_angle(a, b)
 
     # Test
-    assert calc_angle == exp_angle, "Problem detected in finding angle < 180"
+    assert calc_angle == exp_angle, "Problem detected in finding angle > 180°"
 
 
 if __name__ == "__main__":
