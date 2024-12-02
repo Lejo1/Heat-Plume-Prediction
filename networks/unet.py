@@ -35,7 +35,6 @@ class UNet(nn.Module):
 
         for upconv, decoder, encoding in zip(self.upconvs, self.decoders, reversed(encodings)):
             x = upconv(x)
-            print(f"x shape:{x.shape}           encoding shape:{encoding.shape}")
             x = cat((x, encoding), dim=1)
             x = decoder(x)
 
