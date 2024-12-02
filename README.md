@@ -141,5 +141,4 @@
 - after clean up, one month after paper submission (Oct. '23): c8da3da
 - release for students to extend_plumes (Mar. '24): ed884f9fb3b8af9808f7abcfee9a0810e8c0fe03, branch release_24
 - release for students to work on first stage (e.g. rotational equivariance) (Mar. '24): 083bb976dfccc52d1, branch release_24
-- directly after equivariance thesis (Oct. '24): 5b195d73c7429c164ed381710baf3689e0ef9701
-- after cleanup, two weeks after thesis submission (Oct. '24): e386d7e070b82522749cb76d894822e53f8bcbe9
+- after equivariance thesis (Dec. '24): a097de9f2f48ff15f9ff274a9d6c875a48ef85aa
