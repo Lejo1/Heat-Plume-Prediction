@@ -37,6 +37,31 @@
     --inputs: make sure, they are the same as in the model (default `gksi`)
     --visualize: visualize the results (default `False`)
     ```
+    
+## Additions due to equivariance:
+- **Scalar Fields Support:**
+  Only scalar fields are supported (`pksi` as input).
+  
+- **New Arguments:**
+  - `--augmentation_n`: Adds augmented versions of each data point by rotating each data point with `augmentation_n` angles uniformly sampled from (0°, 360°). <br>
+    If `augmentation_n < 0`, it adds versions rotated by 90°, 180°, and 270°. (Default: `0`)
+  - `--equivariance_case`: 
+      - `none` : No equivariance is applied. (`augmentation_n` can be used to introduce equivariance)
+      - `oriented_boxes` : Rotate data points to align with a specific direction for training\inference. (`augmentation_n` will be set to 0)
+      -  `ecnn` : Use equivariant CNN. (`augmentation_n` will be set to 0)
+     (Default: `none`)
+  - `--data_n`: Restricts the dataset to `data_n` data points. The test set remains unaffected. <br>
+    Setting `data_n <= 0` or larger than the number of data points results in no restriction. (Default: `-1`)
+
+- **Arguments for Experimenting (Apply before training or inference):**
+  - `--mask`: Applies a mask to all data. (Default: `False`)
+  - `--rotate_inputs`: Rotates all data by the specified angle. (Default: `0`)
+
+- **Logging with Weights & Biases**
+  - login to wandb account with `wandb login`.
+  - In `main_hyperparam.py` set wandb setting (l.23-l.36) as desired.
+  - Run `main_hyperparam.py` the same way as `main.py`.
+    
 ## Training a 2nd stage model (2HP-NN): !excluded on this branch!
 - for running a 2HP-NN you need the prepared 2HP-dataset in datasets_prepared_dir_2hp (paths.yaml)
 - for preparing 2HP-NN: expects that 1HP-NN exists and trained on; for 2HP-NN (including preparation) run main.py with the following arguments:
@@ -116,3 +141,4 @@
 - after clean up, one month after paper submission (Oct. '23): c8da3da
 - release for students to extend_plumes (Mar. '24): ed884f9fb3b8af9808f7abcfee9a0810e8c0fe03, branch release_24
 - release for students to work on first stage (e.g. rotational equivariance) (Mar. '24): 083bb976dfccc52d1, branch release_24
+- after equivariance thesis (Dec. '24): a097de9f2f48ff15f9ff274a9d6c875a48ef85aa
