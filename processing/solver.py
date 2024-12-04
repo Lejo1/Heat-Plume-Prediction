@@ -15,6 +15,7 @@ from tqdm.auto import tqdm
 from postprocessing.visualization import visualizations
 
 from data_stuff.utils import SettingsTraining
+from networks.equivariantCNN import G_UNet
 from networks.unet import weights_init, UNet
 import networks.unet as unet
 import networks.equivariantCNN as ecnn
@@ -122,7 +123,7 @@ class Solver(object):
                 #scheduler.step()
 
             except KeyboardInterrupt:
-                model_tmp = UNetHalfPad(in_channels=len(settings.inputs), out_channels=1) # UNet
+                model_tmp = G_UNet(in_channels=len(settings.inputs), out_channels=1) # UNet
                 model_tmp.load_state_dict(self.best_model_params["state_dict"])
                 model_tmp.to(settings.device)
                 model_tmp.save(settings.destination, model_name=f"interim_model_e{epoch}.pt")
