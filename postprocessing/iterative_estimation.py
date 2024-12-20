@@ -21,7 +21,11 @@ from data_stuff.transforms import NormalizeTransform
 batch = False
 save = True
 
-def test_temp(model: UNet, settings: SettingsTraining):
+def iterative_estimation(model: UNet, settings: SettingsTraining):
+    """
+    Takes the given model and uses it to iteratively estimate 
+    the temperature field of the domain defined in the Settings file
+    """
     time_start_prep_2hp = time.perf_counter()
 
     #prepare data and normalization
@@ -81,6 +85,10 @@ def test_temp(model: UNet, settings: SettingsTraining):
 
 # batch application, deprecated
 def apply_batch(model: UNet, settings: SettingsTraining, domain, run_id, info, settings_pic):
+    """
+    Estimates the temperature field around every heat pump in a single batch
+    repeats this step for the number of heat pumps
+    """
     norm = NormalizeTransform(info)
     single_hps = domain.extract_hp_boxes("cpu")
     avg_time_inference_all = 0
@@ -137,6 +145,10 @@ def apply_batch(model: UNet, settings: SettingsTraining, domain, run_id, info, s
         f.write(f"avg inference times for 1HP-NN in seconds: {avg_time_inference_all/len(single_hps)}\n")
 
 def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, info, settings_pic):
+    """
+    iteratively estimates the temperature field around a single heat pump going in flow direction
+    applies the model once to every heat pump
+    """
     norm = NormalizeTransform(info)
     single_hps = domain.extract_hp_boxes("cpu")
     avg_time_inference_all = 0

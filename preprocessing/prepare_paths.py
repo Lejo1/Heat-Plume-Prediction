@@ -21,7 +21,7 @@ class Paths2HP:
     datasets_boxes_prep_path: pathlib.Path # 2hp-boxes
 
 # Functions for setting paths
-def set_paths_1hpnn(dataset_name: str, inputs:str = "", dataset_prep:str = "", problem:str="2stages")-> Paths1HP:
+def set_paths_1hpnn(dataset_name: str, inputs:str = "", dataset_prep:str = "", architecture:str="2stages")-> Paths1HP:
     paths_file:str = "paths.yaml"
     if not os.path.exists(paths_file):
         raise FileNotFoundError(f"{paths_file} not found")
@@ -32,7 +32,7 @@ def set_paths_1hpnn(dataset_name: str, inputs:str = "", dataset_prep:str = "", p
     default_raw_dir = pathlib.Path(paths["default_raw_dir"])
     destination_dir = pathlib.Path(paths["models_1hp_dir"])
     datasets_prepared_dir = pathlib.Path(paths["datasets_prepared_dir"])
-    default_raw_dir, destination_dir, datasets_prepared_dir = extend_paths_for_problem(problem, default_raw_dir, destination_dir, datasets_prepared_dir)
+    default_raw_dir, destination_dir, datasets_prepared_dir = extend_paths_for_architecture(architecture, default_raw_dir, destination_dir, datasets_prepared_dir)
 
     dataset_raw_path = default_raw_dir / dataset_name
     if dataset_prep == "":
@@ -83,22 +83,22 @@ def set_paths_2hpnn(dataset_name: str, preparation_case: str, model_name: str = 
         datasets_boxes_prep_path,
         ), inputs, destination_dir
 
-def extend_paths_for_problem(problem:str, default_raw_dir: pathlib.Path, destination_dir: pathlib.Path, datasets_prepared_dir: pathlib.Path)-> typing.Tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
-    if problem in ["extend1", "extend2"]:
+def extend_paths_for_architecture(architecture:str, default_raw_dir: pathlib.Path, destination_dir: pathlib.Path, datasets_prepared_dir: pathlib.Path)-> typing.Tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    if architecture in ["extend1", "extend2"]:
         default_raw_dir = default_raw_dir / "extend_plumes"
         datasets_prepared_dir = datasets_prepared_dir / "extend_plumes"
-        if problem == "extend1":
+        if architecture == "extend1":
             destination_dir = destination_dir / "extend_plumes1"
         else:
             destination_dir = destination_dir / "extend_plumes2"
-    elif problem == "allin1":
+    elif architecture == "allin1":
         default_raw_dir = default_raw_dir / "giant_manyhps"
         destination_dir = destination_dir / "allin1"
         datasets_prepared_dir = datasets_prepared_dir / "giant_manyhps"
-    elif problem in ["2stages","parallel","quad"]:
+    elif architecture in ["2stages","parallel","quad"]:
         default_raw_dir = default_raw_dir / "1hp_boxes"
         destination_dir = destination_dir / "1hpnn"
         datasets_prepared_dir = datasets_prepared_dir / "1hp_boxes"
     else:
-        raise ValueError(f"problem {problem} not known")
+        raise ValueError(f"architecture {architecture} not known")
     return default_raw_dir, destination_dir, datasets_prepared_dir

@@ -1,6 +1,5 @@
 import argparse
 import logging
-import os
 import pathlib
 import time
 from typing import List
@@ -27,12 +26,8 @@ from postprocessing.visualization import plot_datafields, DataToVisualize
 
 def prepare_xhp_dataset(paths: Paths2HP, settings:SettingsTraining):
     """
-    assumptions:
-    - 1hp-boxes are generated already
-    - 1hpnn is trained
-    - cell sizes of 1hp-boxes and domain are the same
-    - boundaries of boxes around at least one hp is within domain
-    - device: attention, all stored need to be produced on cpu for later pin_memory=True and all other can be gpu
+    prepare dataset for a domain with x heat pumps
+    for good quality the model should be trained on x-1 heat pumps
     """
     
     timestamp_begin = time.ctime()
@@ -40,11 +35,11 @@ def prepare_xhp_dataset(paths: Paths2HP, settings:SettingsTraining):
 
     ## load model
     time_start_prep_domain = time.perf_counter()
-    if settings.problem == "2stages":
+    if settings.architecture == "2stages":
         model_1HP = UNet(in_channels=len(settings.inputs)).float()
-    elif settings.problem == "quad":
+    elif settings.architecture == "quad":
         model_1HP = UNetQuad(in_channels=len(settings.inputs)).float()
-    elif settings.problem == "parallel":
+    elif settings.architecture == "parallel":
         model_1HP = UNetParallel(in_channels=len(settings.inputs)).float()
     model_1HP.load(paths.model_1hp_path, map_location=settings.device)
     model_1HP.eval()
@@ -59,8 +54,8 @@ def prepare_xhp_dataset(paths: Paths2HP, settings:SettingsTraining):
     # prepare dataset
     time_start_prep_2hp = time.perf_counter()
     avg_time_inference_1hp = 0
-    list_runs = os.listdir(paths.dataset_1st_prep_path / "Inputs")
-    for run_file in tqdm(list_runs, desc="2HP prepare", total=len(list_runs)):
+    list_runs = pathlib.Path(paths.dataset_1st_prep_path / "Inputs")
+    for run_file in tqdm(list_runs, desc="2HP prepare", total=len(list_runs.iterdir)):
         # for each run, load domain and 1hp-boxes
         run_id = f'{run_file.split(".")[0]}_'
         domain = Domain(paths.dataset_1st_prep_path, stitching_method="max", file_name=run_file)
@@ -102,20 +97,16 @@ def prepare_xhp_dataset(paths: Paths2HP, settings:SettingsTraining):
 
     return domain, single_hps
 
-def load_and_prepare_for_2nd_stage(paths: Paths2HP, inputs_1hp: str, run_id: int, device: str = "cpu"):
-    model_1HP = UNet(in_channels=len(inputs_1hp)).float()
-    model_1HP.load(paths.model_1hp_path, device)
-    model_1HP.eval()
-
-    domain = Domain(paths.dataset_1st_prep_path, stitching_method="max", file_name=f"RUN_{run_id}.pt")
-    single_hps = domain.extract_hp_boxes(device)
-    single_hps, _ = prepare_hp_boxes(paths, model_1HP, single_hps, domain, run_id, save_bool=False) # apply 1HP-NN to predict the heat plumes
-
-    # TODO replace with loading from file  - requires saving the position of a hp within its domain and the connection domain - single hps  
-    return domain, single_hps
-
 def prepare_hp_boxes(paths:Paths2HP, model_1HP:UNet, single_hps:List[HeatPumpBox], domain:Domain, run_id:int,settings:SettingsTraining, avg_time_inference_1hp:float=0, save_bool:bool=True):
     hp: HeatPumpBox
+    """
+    prepare the dataset by predicting the temperature field around every heat pump
+    starts by generating a set of permutations for the order in which the temperature field around a heat pump is predicted
+    every heat pump is last once, as we assume the step from x-1 heat pump to x heat pump to be the most important
+    saves them too
+
+    Assumes the temperature field to be the last input parameter!!!
+    """
 
     #heat pumps identified through position in domain
     positions = []
@@ -131,7 +122,7 @@ def prepare_hp_boxes(paths:Paths2HP, model_1HP:UNet, single_hps:List[HeatPumpBox
         relevant_permutations.append(deepcopy(positions))
         positions[index], positions[-1] = positions[-1], positions[index]
 
-    current_perm = 0
+    current_permutation = 0
     # iterate through heat pumps in order of the permutation
     for permutation in relevant_permutations:
         count = 0
@@ -146,10 +137,10 @@ def prepare_hp_boxes(paths:Paths2HP, model_1HP:UNet, single_hps:List[HeatPumpBox
                 if equal(hp.pos,position):
                     current_hp = hp
             
-            # get input temperature field except for first heat pump
+            # get input temperature field except for first heat pump, need temperature field to be the last input!!!
             if count > 0:
                 current_hp.get_other_temp_field(hps_copy)
-                current_hp.inputs[4] = current_hp.other_temp_field.clone().detach()
+                current_hp.inputs[-1] = current_hp.other_temp_field.clone().detach()
             
             # apply cnn
             time_start_run_1hp = time.perf_counter()
@@ -159,18 +150,18 @@ def prepare_hp_boxes(paths:Paths2HP, model_1HP:UNet, single_hps:List[HeatPumpBox
             # plot datapoints and save them
             dict_to_plot = {}
             pathlib.Path(settings.destination / run_id).mkdir(parents=True, exist_ok=True)
-            name_id = "perm_" + str(current_perm) + "_hp_" +str(count)
+            name_id = "perm_" + str(current_permutation) + "_hp_" +str(count)
             name_pic = settings.destination / run_id / name_id
 
-            dict_to_plot[f"input{run_id}{count}"] = DataToVisualize(domain.reverse_norm(current_hp.inputs[4].clone().detach(), property="Temperature [C]"), f"input {run_id}_{count}")
+            dict_to_plot[f"input{run_id}{count}"] = DataToVisualize(domain.reverse_norm(current_hp.inputs[-1].clone().detach(), property="Temperature [C]"), f"input {run_id}_{count}")
 
             if count == len(permutation)-1:
                 dict_to_plot[f"label{run_id}{count}"] = DataToVisualize(domain.reverse_norm(current_hp.label.clone().detach().squeeze(), property="Temperature [C]"), f"label {run_id}_{count}")
-                current_hp.save(run_id=run_id+str(current_perm), dir=paths.datasets_boxes_prep_path/f"{count+1}HP",)
+                current_hp.save(run_id=run_id+str(current_permutation), dir=paths.datasets_boxes_prep_path/f"{count+1}HP",)
             else:
                 dict_to_plot[f"label{run_id}{count}"] = DataToVisualize(domain.reverse_norm(current_hp.primary_temp_field.clone().detach().squeeze(), property="Temperature [C]"), f"label {run_id}_{count}")
-                current_hp.save(run_id=run_id+str(current_perm), dir=paths.datasets_boxes_prep_path/f"{count+1}HP", alt_label=current_hp.primary_temp_field.clone().detach(),)
+                current_hp.save(run_id=run_id+str(current_permutation), dir=paths.datasets_boxes_prep_path/f"{count+1}HP", alt_label=current_hp.primary_temp_field.clone().detach(),)
             count = count + 1
             plot_datafields(dict_to_plot, name_pic, settings_pic)
-        current_perm = current_perm + 1 
+        current_permutation = current_permutation + 1 
     return single_hps, avg_time_inference_1hp

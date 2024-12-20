@@ -192,6 +192,7 @@ class UNetBC(UNetParallel):
             nn.ReLU(inplace=True),
         )
 
+# TODO replace with https://github.com/MLRichter/receptive_field_analysis_toolbox
 def calc_receptive_field(meta_model):
     field_size = 1
     mult_stride = 1

@@ -101,9 +101,9 @@ class Solver(object):
                         #     writer.add_histogram(name, param, epoch)
 
             except KeyboardInterrupt:
-                if settings.problem == "2stages":
+                if settings.architecture == "2stages":
                     model_tmp = UNet(in_channels=len(settings.inputs), out_channels=1) # UNet
-                elif settings.problem == "quad":
+                elif settings.architecture == "quad":
                     model_tmp = UNetQuad(in_channels=len(settings.inputs), out_channels=1)
                 else:
                     model_tmp = UNetParallel(in_channels=len(settings.inputs), out_channels=1)

@@ -6,9 +6,13 @@ from preprocessing.prepare_paths import Paths1HP, Paths2HP,  set_paths_1hpnn, se
 from preprocessing.prepare_xhp_dataset import prepare_xhp_dataset
 
 def prepare_data_and_paths(settings:SettingsTraining):
-    if not settings.case == "prep_xhp":
+    """
+    prepare datasets using raw data if necessary
+    set up paths to those prepared datasets for future usage
+    """
+    if not settings.case == "prepare":
         paths: Paths1HP
-        paths, destination_dir = set_paths_1hpnn(settings.dataset_raw, settings.inputs, settings.dataset_prep, problem=settings.problem)
+        paths, destination_dir = set_paths_1hpnn(settings.dataset_raw, settings.inputs, settings.dataset_prep, architecture=settings.architecture)
     else:
         paths: Paths2HP
         inputs_2hp = settings.inputs
@@ -20,20 +24,20 @@ def prepare_data_and_paths(settings:SettingsTraining):
     settings.save_notes()
     settings.make_model_path(destination_dir)
 
-    if settings.case == "prep_xhp":
+    if settings.case == "prepare":
+        #generate prepared dataset for raw datasets with multiple heat pumps
         prepare_xhp_dataset(paths, settings)
         return settings
+    else:
+        # prepare dataset if not done yet OR if test=case do it anyways because of potentially different std,mean,... values than trained with
+        if not settings.dataset_prep.exists() or settings.case == "test": # if test, always want to prepare because the normalization parameters have to match
+            #some datasets may only be available in prepared form, eg those created through prepare xhp, so there is no raw dataset to be prepared
+            if not settings.only_prep:
+                prepare_dataset_for_1st_stage(paths, settings)
+        print(f"Dataset prepared ({paths.dataset_1st_prep_path})")
 
-    # prepare dataset if not done yet OR if test=case do it anyways because of potentially different std,mean,... values than trained with
-    if not settings.dataset_prep.exists() or settings.case == "test": # if test, always want to prepare because the normalization parameters have to match
-        #TODO handle case for 2HP where no raw dataset exits
-        #print("skip preparing raw dataset as current tests do not have raw dataset in prepare.py")
-        if not settings.only_prep:
-            prepare_dataset_for_1st_stage(paths, settings)
-    print(f"Dataset prepared ({paths.dataset_1st_prep_path})")
 
-
-    if settings.case == "train":
-        shutil.copyfile(paths.dataset_1st_prep_path / "info.yaml", settings.destination / "info.yaml")
-    settings.save()
-    return settings
+        if settings.case == "train":
+            shutil.copyfile(paths.dataset_1st_prep_path / "info.yaml", settings.destination / "info.yaml")
+        settings.save()
+        return settings

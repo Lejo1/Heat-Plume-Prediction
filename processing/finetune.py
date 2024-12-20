@@ -17,15 +17,22 @@ import os
 from torch.utils.tensorboard import SummaryWriter
 from torch import manual_seed
 from tqdm.auto import tqdm
-from data_stuff.utils import SettingsTraining
+from data_stuff.utils import SettingsTraining, init_data
 import csv
 from torch.utils.data import DataLoader
 from ray.train import RunConfig
 from ray.tune.search.optuna import OptunaSearch
 from data_stuff.dataset import SimulationDataset, DatasetExtend1, DatasetExtend2, get_splits
 
-def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, gpus_per_trial=1, ):
-    if settings.problem == "parallel":
+def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, ):
+    """
+    method to start hyperparameter tuning
+    
+    settings file contains the architecture information and training data info
+    num_samples: how many hyperparameter configurations should be sampled
+    max_num_epochs: how many epochs should the sampled configs be trained for
+    """
+    if settings.architecture == "parallel":
         kernel_sizes = [(4*i,i) for i in range(2,5)]
         kernel_sizes = kernel_sizes + [(2*j,j) for j in range(2,5)]
         config = {
@@ -39,7 +46,7 @@ def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, gpus
             "par_dil": tune.choice([(6,1),(4,1),(2,1),(1,1),(6,2),(4,2),(2,2)]),
             "par_kern": tune.choice([(4,1),(8,2),(12,3),(16,4),(2,1),(4,2),(8,4),(16,8),(1,4),(2,8),(3,12)]),
         }
-    elif settings.problem == "quad":
+    elif settings.architecture == "quad":
         config = {
             "features": tune.choice([2**i for i in range(4,7)]),
             "lr": tune.choice([1e-4]),
@@ -68,7 +75,7 @@ def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, gpus
         reduction_factor=2,
     )
     algo = OptunaSearch()
-    trainable_with_resources = tune.with_resources(partial(train_mnist, settings=settings), {"cpu": 4, "gpu": gpus_per_trial})
+    trainable_with_resources = tune.with_resources(partial(train_config, settings=settings), {"cpu": 4, "gpu": 1})
     tuner = tune.Tuner(
         trainable_with_resources,
         tune_config=tune.TuneConfig(
@@ -89,7 +96,7 @@ def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, gpus
     print("path is:", results.get_best_result().path)
     print("metrics are", results.get_best_result().metrics_dataframe)
     # result = tune.run(
-    #     partial(train_mnist, settings=settings),
+    #     partial(train_config, settings=settings),
     #     resources_per_trial={"cpu": 8, "gpu": gpus_per_trial},
     #     config=config,
     #     num_samples=num_samples,
@@ -102,10 +109,13 @@ def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, gpus
     #print(f"Best trial final validation loss: {best_trial.last_result['loss']}")
 
 
-def train_mnist(config,settings=None):
+def train_config(config,settings=None):
+    """
+    trains a model based on the configurations defined by config
+    """
     torch.cuda.empty_cache()
     input_channels, dataloaders = init_data(settings)
-    if settings.problem == "parallel":
+    if settings.architecture == "parallel":
         model = UNetParallel(in_channels=input_channels,
                             init_features=config["features"],
                             depth=config["depth"],
@@ -114,7 +124,7 @@ def train_mnist(config,settings=None):
                             par_depth=config["par_depth"],
                             par_dil=config["par_dil"],
                             par_kern=config["par_kern"]).to(settings.device)
-    elif settings.problem == "quad":
+    elif settings.architecture == "quad":
         model = UNetQuad(in_channels=input_channels,init_features=config["features"],depth=config["depth"],padding_mode=config["padding_mode"],dilation=config["dilation"],down_kernel=config["down_kernel"]).to(settings.device)
     else:
         model = UNet(in_channels=input_channels,init_features=config["features"],depth=config["depth"],padding_mode=config["padding_mode"],dilation=config["dilation"]).to(settings.device)
@@ -170,27 +180,4 @@ def test_loss(model: UNet, dataloader: DataLoader, device: str, loss_func: modul
     return mse_loss
 
 
-def init_data(settings: SettingsTraining, seed=1):
-    if settings.problem in ["2stages", "parallel","quad"]:
-        dataset = SimulationDataset(settings.dataset_prep)
-    elif settings.problem == "extend1":
-        dataset = DatasetExtend1(settings.dataset_prep, box_size=settings.len_box)
-    elif settings.problem == "extend2":
-        dataset = DatasetExtend2(settings.dataset_prep, box_size=settings.len_box, skip_per_dir=settings.skip_per_dir)
-        settings.inputs += "T"
-    print(f"Length of dataset: {len(dataset)}")
-    generator = torch.Generator().manual_seed(seed)
 
-    split_ratios = [0.7, 0.2, 0.1]
-    if settings.case == "test":
-        split_ratios = [0.0, 0.0, 1.0] 
-
-    datasets = random_split(dataset, get_splits(len(dataset), split_ratios), generator=generator)
-    dataloaders = {}
-    try:
-        dataloaders["train"] = DataLoader(datasets[0], batch_size=20, shuffle=True, num_workers=1)
-        dataloaders["val"] = DataLoader(datasets[1], batch_size=20, shuffle=True, num_workers=1)
-    except: pass
-    dataloaders["test"] = DataLoader(datasets[2], batch_size=20, shuffle=True, num_workers=1)
-
-    return dataset.input_channels, dataloaders

@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, random_split
 from torch.nn import MSELoss
 
 from data_stuff.dataset import SimulationDataset, get_splits
-from data_stuff.utils import SettingsTraining
+from data_stuff.utils import SettingsTraining, init_data
 from networks.unet import UNet
 from networks.unetQuad import UNetQuad
 from networks.unetParallel import UNetParallel
@@ -18,32 +18,14 @@ from processing.finetune import tune_nn
 from preprocessing.prepare import prepare_data_and_paths
 from postprocessing.visualization import plot_avg_error_cellwise, visualizations, infer_all_and_summed_pic, visualize_dataset
 from postprocessing.measurements import measure_loss, save_all_measurements
-from postprocessing.test_temp import test_temp
+from postprocessing.iterative_estimation import iterative_estimation
 from torchsummary import summary
-
-def init_data(settings: SettingsTraining, seed=1):
-    dataset = SimulationDataset(settings.dataset_prep)
-    print(f"Length of dataset: {len(dataset)}")
-    generator = torch.Generator().manual_seed(seed)
-
-    split_ratios = [0.7, 0.2, 0.1]
-    if settings.case in ["test","visualize"]:
-        split_ratios = [0.0, 0.0, 1.0]
-
-    datasets = random_split(dataset, get_splits(len(dataset), split_ratios), generator=generator)
-    dataloaders = {}
-    try:
-        dataloaders["train"] = DataLoader(datasets[0], batch_size=40, shuffle=True, num_workers=0)
-        dataloaders["val"] = DataLoader(datasets[1], batch_size=40, shuffle=True, num_workers=0)
-    except: pass
-    dataloaders["test"] = DataLoader(datasets[2], batch_size=10, shuffle=True, num_workers=0)
-
-    return dataset.input_channels, dataloaders
 
 
 def run(settings: SettingsTraining):
     multiprocessing.set_start_method("spawn", force=True)
 
+    #hyperparamter tuning, no training and visualization
     if settings.case in ["hypertune"]:
         tune_nn(settings)
         return
@@ -54,23 +36,25 @@ def run(settings: SettingsTraining):
 
     input_channels, dataloaders = init_data(settings)
     # model
-    if settings.problem == "2stages":
+    if settings.architecture == "2stages":
         model = UNet(in_channels=input_channels).float()
-    elif settings.problem == "parallel":
+    elif settings.architecture == "parallel":
         model = UNetParallel(in_channels=input_channels).float()
-    elif settings.problem == "quad":
+    elif settings.architecture == "quad":
         model = UNetQuad(in_channels=input_channels).float()
 
     if settings.case in ["test", "finetune"]:
         model.load(settings.model, map_location=settings.device)
     
+    #only visualization for evaluation, skip other stuff
     if settings.case == "visualize":
         visualize_dataset(dataloaders["test"], settings.device, plot_path=settings.destination / f"plot_vis", amount_datapoints_to_visu=20, pic_format="png")
         return
 
+    #use model for iterative estimation of whole domain 
     if settings.case == "iterative":
         model.to("cpu")
-        model = test_temp(model,settings)
+        model = iterative_estimation(model,settings)
         return model
     
     model.to(settings.device)
@@ -102,7 +86,6 @@ def run(settings: SettingsTraining):
     times["time_end"] = time.perf_counter()
     errors = {}
     if settings.case == "test":
-        #summary(model, (5, 256, 64), receptive_field=True, max_depth=5)
         settings.visualize = True
         which_dataset = "test"
         errors = measure_loss(model, dataloaders, settings.device, vT_case="temperature")
@@ -119,7 +102,7 @@ def run(settings: SettingsTraining):
 
 def save_inference(model_name:str, in_channels: int, settings: SettingsTraining):
     # push all datapoints through and save all outputs
-    if settings.problem == "2stages":
+    if settings.architecture == "2stages":
         model = UNet(in_channels=in_channels).float()
 
     model.load(model_name, map_location=settings.device)
@@ -149,14 +132,14 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_prep", type=str, default="")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--epochs", type=int, default=10000)
-    parser.add_argument("--case", type=str, choices=["train", "test", "finetune", "hypertune", "visualize", "iterative", "prep_xhp"], default="train")
-    parser.add_argument("--model", type=str, default="default") # required for testing or finetuning
+    parser.add_argument("--case", type=str, choices=["train", "test", "finetune", "hypertune", "visualize", "iterative", "prepare"], default="train")
+    parser.add_argument("--model", type=str, default="default")
     parser.add_argument("--destination", type=str, default="")
-    parser.add_argument("--inputs", type=str, default="gksit") #choices=["gki", "gksi", "pksi", "gks", "gksi100", "ogksi1000", "gksi1000", "pksi100", "pksi1000", "ogksi1000_finetune", "gki100", "t", "gkiab", "gksiab", "gkt"]
+    parser.add_argument("--inputs", type=str, default="gksit")
     parser.add_argument("--visualize", type=bool, default=False)
     parser.add_argument("--only_prep", type=bool, default=False)
     parser.add_argument("--save_inference", type=bool, default=False)
-    parser.add_argument("--problem", type=str, choices=["2stages","parallel","quad"], default="2stages")
+    parser.add_argument("--architecture", type=str, choices=["2stages","parallel","quad"], default="2stages")
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--len_box", type=int, default=256)
     parser.add_argument("--skip_per_dir", type=int, default=256)
@@ -164,7 +147,7 @@ if __name__ == "__main__":
     settings = SettingsTraining(**vars(args))
 
     settings = prepare_data_and_paths(settings)
-    if not settings.case == "prep_xhp":
+    if not settings.case == "prepare":
         model = run(settings)
         if args.save_inference:
             save_inference(settings.model, len(args.inputs), settings)
