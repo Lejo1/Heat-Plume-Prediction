@@ -38,21 +38,23 @@
   - --notes: not used in this fork
   - --len_box: length in y-direction that the datapoints should be cut off (default `256`). Make sure, this number is less or equal to the length of the simulation run.
   - --skip_per_dir: not used in this fork
-
+  
+The general workflow starts by training a model specialized for the single hp scenario using --case train. This model is reused to generate a two heat pump dataset using --case prepare. This dataset can then be used to train a model for the two hp scenario via --case train. This process can be repeated until the model can provide a good estimation for a global domain by using it with --case iterative.
 
 ## Training a model:
 - for training you need a dataset in datasets_prepared_dir or default_raw_dir (paths.yaml)
 - execute
      ```
-     python main.py --dataset_prep 12HP_2500dp --epoch 8000 --problem quad --inputs gksit --visualize True --device cuda:0 --destination unet_quad
+     python main.py --dataset_prep 12HP_2500dp --epoch 8000 --architecture quad --inputs gksit --visualize True --device cuda:0 --destination unet_quad
      ```
 
 ## Iterative application:
 - for iterative application you need the model in models_1hp_dir (paths.yaml)  and the dataset in default_raw_dir (paths.yaml)
-- ensure that the model parameters are the same in e.g. networks/unet.py 
+- ensure that the hyperparameters from the model defined by --model are the same as in e.g. networks/unet.py (depending on the architecture)
+- if they are different adjust the hyperparameters in the code by hand 
 - execute
   ```
-  python main.py --dataset_raw 5HP --case iterative --model unet_stand --problem 2stages --inputs gksit --destination seq_5hp_large
+  python main.py --dataset_raw 5HP --case iterative --model unet_stand --architecture 2stages --inputs gksit --destination seq_5hp_large
   ```
 
 ## Generating prepared dataset with multiple heat pumps:
@@ -60,7 +62,8 @@
 - the images of the dataset end up in `runs/2hpnn`, the resulting dataset in datasets_prepared_dir_2hp (paths.yaml)
 - execute
 ```
- python main.py --dataset_raw 5HP --problem 2stages --inputs gksit --model unet_large_tuned --visualize True --case prep_xhp --destination 5hp_dataset --device cpu
+ python main.py --dataset_raw 5HP --architecture 2stages --inputs gksit --model unet_large_tuned --visualize True --case prepare --destination 5hp_dataset --device CPU
+
 ```
 
 ## Finding the results:
@@ -88,4 +91,4 @@
     if it does not help, you have to reboot
 
 # important commits
-- after clean up: 416f58fb732d1748ca924c27582667fef359efe1
+- after clean up: 0ee0cb683bb48e2e00472e231dd26a99a80a4217
