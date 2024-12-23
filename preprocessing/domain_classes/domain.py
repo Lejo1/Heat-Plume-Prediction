@@ -2,13 +2,11 @@ import logging
 import os
 import pathlib
 import shutil
-import sys
 from math import cos, sin
 from tqdm.auto import tqdm
 import matplotlib.patches as patches
 
 import matplotlib.pyplot as plt
-import yaml
 from torch import long as torch_long
 from torch import max, ones, save, squeeze, stack, tensor, where, cat, load, zeros, min
 import torch
@@ -160,7 +158,6 @@ class Domain:
         return norm_fct, max_val, min_val, mean_val, std_val
 
     def extract_hp_boxes(self, device:str = "cpu",size_hp:tensor = None, distance_hp:tensor = None) -> list:
-        # TODO decide: get hp_boxes based on grad_p or based on v or get squared boxes around hp
         material_ids = self.get_input_field_from_name("Material ID")
         if distance_hp is None:
             distance_hp_corner = tensor([self.info["PositionHPPrior"][1], self.info["PositionHPPrior"][0]])

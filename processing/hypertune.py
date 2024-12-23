@@ -1,28 +1,19 @@
 from functools import partial
-from networks.unet import UNet, UNetBC
+from networks.unet import UNet
 from networks.unetParallel import UNetParallel
 from networks.unetQuad import UNetQuad
 import torch
-from torch.nn import Module, MSELoss, modules
-from torch.optim import Adam, Optimizer, RMSprop
-from pathlib import Path
-from ray.train import Checkpoint, get_checkpoint
-import ray.cloudpickle as pickle
-import tempfile
+from torch.nn import MSELoss, modules
+from torch.optim import Adam
 from ray import tune
 from ray import train
 from ray.tune.schedulers import ASHAScheduler
-from torch.utils.data import random_split
-import os
-from torch.utils.tensorboard import SummaryWriter
-from torch import manual_seed
 from tqdm.auto import tqdm
-from data_stuff.utils import SettingsTraining, init_data
-import csv
+from data_stuff.utils import SettingsTraining
 from torch.utils.data import DataLoader
-from ray.train import RunConfig
 from ray.tune.search.optuna import OptunaSearch
-from data_stuff.dataset import SimulationDataset, DatasetExtend1, DatasetExtend2, get_splits
+from data_stuff.init_data   import init_data
+
 
 def tune_nn(settings: SettingsTraining, num_samples=200, max_num_epochs=20, ):
     """

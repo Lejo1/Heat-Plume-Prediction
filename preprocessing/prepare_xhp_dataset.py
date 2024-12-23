@@ -1,25 +1,22 @@
-import argparse
 import logging
 import pathlib
 import time
 from typing import List
 
 import yaml
-from torch import Tensor, load, save, stack, unsqueeze, tensor, max, min, equal, mean
+from torch import equal, mean
 from tqdm.auto import tqdm
 
 from preprocessing.domain_classes.domain import Domain
 from preprocessing.domain_classes.heat_pump import HeatPumpBox
-from preprocessing.domain_classes.stitching import Stitching
 from preprocessing.domain_classes.utils_2hp import (
-    save_config_of_merged_inputs, save_config_of_separate_inputs, save_yaml)
+    save_config_of_separate_inputs)
 from preprocessing.prepare_1ststage import prepare_dataset
 from preprocessing.prepare_paths import Paths2HP
 from networks.unet import UNet
 from networks.unetQuad import UNetQuad
 from networks.unetParallel import UNetParallel
 from data_stuff.utils import SettingsTraining
-import itertools
 from copy import deepcopy
 from postprocessing.visualization import plot_datafields, DataToVisualize
 
@@ -54,9 +51,10 @@ def prepare_xhp_dataset(paths: Paths2HP, settings:SettingsTraining):
     # prepare dataset
     time_start_prep_2hp = time.perf_counter()
     avg_time_inference_1hp = 0
-    list_runs = pathlib.Path(paths.dataset_1st_prep_path / "Inputs")
-    for run_file in tqdm(list_runs, desc="2HP prepare", total=len(list_runs.iterdir)):
+    list_runs = list(pathlib.Path(paths.dataset_1st_prep_path / "Inputs").iterdir())
+    for run_path in tqdm(list_runs, desc="2HP prepare", total=len(list_runs)):
         # for each run, load domain and 1hp-boxes
+        run_file = str(run_path).split("/")[-1]
         run_id = f'{run_file.split(".")[0]}_'
         domain = Domain(paths.dataset_1st_prep_path, stitching_method="max", file_name=run_file)
         if mean(domain.prediction) > 10:

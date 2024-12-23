@@ -4,23 +4,20 @@ import multiprocessing
 import numpy as np
 import time
 import torch
-import yaml
-from torch.utils.data import DataLoader, random_split
 from torch.nn import MSELoss
 
-from data_stuff.dataset import SimulationDataset, get_splits
-from data_stuff.utils import SettingsTraining, init_data
+from data_stuff.utils import SettingsTraining
+from data_stuff.init_data import init_data
 from networks.unet import UNet
 from networks.unetQuad import UNetQuad
 from networks.unetParallel import UNetParallel
 from processing.solver import Solver
-from processing.finetune import tune_nn
+from processing.hypertune import tune_nn
 from preprocessing.prepare import prepare_data_and_paths
 from postprocessing.visualization import plot_avg_error_cellwise, visualizations, infer_all_and_summed_pic, visualize_dataset
 from postprocessing.measurements import measure_loss, save_all_measurements
 from postprocessing.iterative_estimation import iterative_estimation
 from torchsummary import summary
-
 
 def run(settings: SettingsTraining):
     multiprocessing.set_start_method("spawn", force=True)
@@ -129,25 +126,28 @@ if __name__ == "__main__":
         
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_raw", type=str, default="dataset_2d_small_1000dp", help="Name of the raw dataset (without inputs)")
-    parser.add_argument("--dataset_prep", type=str, default="")
-    parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--epochs", type=int, default=10000)
-    parser.add_argument("--case", type=str, choices=["train", "test", "finetune", "hypertune", "visualize", "iterative", "prepare"], default="train")
-    parser.add_argument("--model", type=str, default="default")
-    parser.add_argument("--destination", type=str, default="")
-    parser.add_argument("--inputs", type=str, default="gksit")
-    parser.add_argument("--visualize", type=bool, default=False)
-    parser.add_argument("--only_prep", type=bool, default=False)
-    parser.add_argument("--save_inference", type=bool, default=False)
-    parser.add_argument("--architecture", type=str, choices=["2stages","parallel","quad"], default="2stages")
+    parser.add_argument("--dataset_prep", type=str, default="", help="Name of the prepared dataset")
+    parser.add_argument("--device", type=str, default="cuda:0", help="device for torch (cpu, gpu)")
+    parser.add_argument("--epochs", type=int, default=10000, help="For how many epochs the network should be trained")
+    parser.add_argument("--case", type=str, choices=["train", "test", "finetune", "hypertune", "visualize", "iterative", "prepare"], default="train", help="case of the current execution, eg train, test, hyperparameter tuning (hypertune)...")
+    parser.add_argument("--model", type=str, default="default", help="Name of the model")
+    parser.add_argument("--destination", type=str, default="default_dest", help="destination folder name")
+    parser.add_argument("--inputs", type=str, default="gksit", help="input parameters")
+    parser.add_argument("--visualize", type=bool, default=False, help="Flag for visualizing result")
+    parser.add_argument("--only_prep", type=bool, default=False, help="Flag when only prepared dataset is available")
+    parser.add_argument("--save_inference", type=bool, default=False, help="Flag for saving measurements")
+    parser.add_argument("--architecture", type=str, choices=["2stages","parallel","quad"], default="2stages", help="Architecture of model")
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--len_box", type=int, default=256)
     parser.add_argument("--skip_per_dir", type=int, default=256)
     args = parser.parse_args()
     settings = SettingsTraining(**vars(args))
 
-    settings = prepare_data_and_paths(settings)
-    if not settings.case == "prepare":
-        model = run(settings)
-        if args.save_inference:
-            save_inference(settings.model, len(args.inputs), settings)
+    if settings.model == "default" and settings.case in ["test", "finetune", "visualize", "iterative"]:
+        print(f"for case {settings.case} a model is required!")
+    else:
+        settings = prepare_data_and_paths(settings)
+        if not settings.case == "prepare":
+            model = run(settings)
+            if args.save_inference:
+                save_inference(settings.model, len(args.inputs), settings)

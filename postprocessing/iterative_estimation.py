@@ -1,7 +1,6 @@
 import logging
 import os
 import pathlib
-from typing import List
 import time
 import yaml
 import numpy as np
@@ -15,7 +14,6 @@ from postprocessing.visualization import (DataToVisualize,
                                           plot_datafields)
 from data_stuff.utils import SettingsTraining
 from preprocessing.domain_classes.domain import Domain
-from preprocessing.domain_classes.heat_pump import HeatPumpBox
 from data_stuff.transforms import NormalizeTransform
 
 batch = False

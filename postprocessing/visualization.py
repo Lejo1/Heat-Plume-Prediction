@@ -129,7 +129,7 @@ def visualizations(model: UNet, dataloader: DataLoader, device: str, amount_data
 
     measure = False
     vis = True
-    amount_datapoints_to_visu = 999
+    amount_datapoints_to_visu = 10
     if measure:
         vis = False
         amount_datapoints_to_visu = 10
@@ -400,9 +400,9 @@ def measure_len_width_1K_isoline(data: Dict[str, "DataToVisualize"]):
                     lower_bound = min(lower_bound, seg[:,1].min())
         lengths[key] = max(right_bound - left_bound, 0)
         widths[key] = max(upper_bound - lower_bound, 0)
-        print(f"lengths_{key[2:]}.append({lengths[key]})")
-        print(f"widths_{key[2:]}.append({widths[key]})")
-        print(f"max_temps_{key[2:]}.append({datapoint.data.max()})")
+        #print(f"lengths_{key[2:]}.append({lengths[key]})")
+        #print(f"widths_{key[2:]}.append({widths[key]})")
+        #print(f"max_temps_{key[2:]}.append({datapoint.data.max()})")
         plt.sca(axes[index+2])
     plt.close("all")
     return lengths, widths
