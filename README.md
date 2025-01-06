@@ -67,7 +67,7 @@ The general workflow starts by training a model specialized for the single hp sc
   ```
 
 ## Finding the results:
-- resulting model (`model.pt`) + normalization parameters (info.yaml) used can be found in `runs/PROBLEM/DESTINATION` with `PROBLEM` in [1hpnn, 2hpnn] and `DESTINATION` being the user defined or default name in the call of main.py
+- resulting model (`model.pt`) + normalization parameters (info.yaml) used can be found in `runs/1hpnn/DESTINATION` with `DESTINATION` being the user defined or default name in the call of main.py
 - this folder also contains visualisations if any were made during the training/inference
 - prepared datasets are in datasets_prepared (paths.yaml:`datasets_prepared_dir/PROBLEM`)
 
