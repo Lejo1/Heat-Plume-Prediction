@@ -14,8 +14,8 @@
     datasets_prepared_dir: /home/pelzerja/pelzerja/test_nn/datasets_prepared/1HP_NN # where the prepared data is stored
     datasets_raw_domain_dir: /scratch/sgs/pelzerja/datasets/2hps_demonstrator_copy_of_local
     datasets_prepared_domain_dir: /home/pelzerja/pelzerja/test_nn/datasets_prepared/2HP_domain
-    prepared_1hp_best_models_and_data_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN_preparation_BEST_models_and_data
-    models_2hp_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs
+    models_1hp_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs
+    models_2hp_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs/2hpnn
     datasets_prepared_dir_2hp: /home/pelzerja/pelzerja/test_nn/datasets_prepared/2HP_NN
     ```
 
@@ -48,23 +48,23 @@ The general workflow starts by training a model specialized for the single hp sc
      python main.py --dataset_prep 12HP_2500dp --epoch 8000 --architecture quad --inputs gksit --visualize True --device cuda:0 --destination unet_quad
      ```
 
+## Generating prepared dataset with multiple heat pumps:
+- you need the model in models_1hp_dir (paths.yaml) and the dataset in default_raw_dir (paths.yaml)
+- the images of the dataset end up in `runs/2hpnn`, the resulting dataset in datasets_prepared_dir_2hp (paths.yaml)
+- execute
+```
+ python main.py --dataset_raw 5HP --architecture parallel --inputs gksit --model unet_para_f64_d5_k4_2500dp --visualize True --case prepare --destination 5hp_dataset --device CPU
+
+```
+
 ## Iterative application:
 - for iterative application you need the model in models_1hp_dir (paths.yaml)  and the dataset in default_raw_dir (paths.yaml)
 - ensure that the hyperparameters from the model defined by --model are the same as in e.g. networks/unet.py (depending on the architecture)
 - if they are different adjust the hyperparameters in the code by hand 
 - execute
   ```
-  python main.py --dataset_raw 5HP --case iterative --model unet_stand --architecture 2stages --inputs gksit --destination seq_5hp_large
+  python main.py --dataset_raw 5HP --case iterative --model unet_para_f64_d5_k4_2500dp --architecture parallel --inputs gksit --destination seq_5hp_large
   ```
-
-## Generating prepared dataset with multiple heat pumps:
-- you need the model in models_1hp_dir (paths.yaml) and the dataset in default_raw_dir (paths.yaml)
-- the images of the dataset end up in `runs/2hpnn`, the resulting dataset in datasets_prepared_dir_2hp (paths.yaml)
-- execute
-```
- python main.py --dataset_raw 5HP --architecture 2stages --inputs gksit --model unet_large_tuned --visualize True --case prepare --destination 5hp_dataset --device CPU
-
-```
 
 ## Finding the results:
 - resulting model (`model.pt`) + normalization parameters (info.yaml) used can be found in `runs/PROBLEM/DESTINATION` with `PROBLEM` in [1hpnn, 2hpnn] and `DESTINATION` being the user defined or default name in the call of main.py
