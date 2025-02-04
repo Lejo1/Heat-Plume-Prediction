@@ -90,7 +90,7 @@ class SignedDistanceTransform:
             logging.info("No material ID in data, no SignedDistanceTransform")
             return data
 
-        def get_loc_hp():
+        def get_loc_hp(): # TODO clean up - this appearsquite often in various forms
             if "SDF" in data.keys():
                 loc_hp = nonzero(data["SDF"] == torch.max(
                     data["SDF"])).squeeze()
@@ -297,7 +297,7 @@ class ReduceTo2DTransform:
             self.slice_dimension = 2  # z
         else:
             self.slice_dimension = 0  # x
-        loc_hp = np.array([2, 9, 2])
+        loc_hp = np.array([2, 9, 2]) # TODO hardcoded
         self.loc_hp_slice = int(loc_hp[self.slice_dimension])
 
     def __call__(self, data, loc_hp: Tuple = None):
@@ -308,9 +308,9 @@ class ReduceTo2DTransform:
             # check if data is already 2D, if so: do nothing/ only switch axes (for plotting)
             data_shape = data[data_prop].shape
             if 1 in data_shape or len(data_shape) == 2:
-                if data_shape[-1] == 1 and len(data_shape) == 3:
-                    data[data_prop] = np.swapaxes(
-                        data[data_prop], 0, 1)
+                # if data_shape[-1] == 1 and len(data_shape) == 3:
+                #     data[data_prop] = np.swapaxes(
+                #         data[data_prop], 0, 1) # TODO dont want this anymore (2025)
                 already_2d = True
 
             # else: reduce data to 2D
@@ -327,6 +327,7 @@ class ReduceTo2DTransform:
                     0], "ReduceTo2DTransform: x is larger than data dimension 0"
                 data[prop] = data[prop][self.loc_hp_slice, :, :]
                 data[prop] = unsqueeze(data[prop], 0)  # TODO necessary?
+                # TODO I think there is a lot of unnecessary stuff going on here
         logging.info(
             "Reduced data to 2D, but still has dummy dimension 0 for Normalization to work")
         return data
