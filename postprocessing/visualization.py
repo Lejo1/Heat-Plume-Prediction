@@ -4,8 +4,6 @@ from math import inf
 from typing import Dict
 import pathlib
 
-import matplotlib as mpl
-# mpl.use('pdf') #pgf')
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -15,6 +13,7 @@ from preprocessing.transforms import NormalizeTransform
 from processing.networks.unet import UNet
 from processing.pipelines.extend_plumes_old import infer_nopad, update_params
 from postprocessing.visu_utils import _aligned_colorbar
+import postprocessing.cmap_jp
 
 @dataclass
 class DataToVisualize:
@@ -31,7 +30,7 @@ class DataToVisualize:
     def __post_init__(self):
         extent = (0,int(self.extent_highs[0]),int(self.extent_highs[1]),0)
 
-        self.imshowargs = {"cmap": "RdBu_r", 
+        self.imshowargs = {"cmap": "jp", 
                            "extent": extent,
                            "interpolation": "nearest",}
         if self.vmax is not None:
@@ -40,7 +39,7 @@ class DataToVisualize:
             self.imshowargs["vmin"] = self.vmin
 
         self.contourfargs = {"levels": np.arange(10.4, 16, 0.25), 
-                             "cmap": "RdBu_r", 
+                             "cmap": "jp", 
                              "extent": extent}
         
         T_gwf = 10.6
@@ -268,7 +267,7 @@ def plot_avg_error_cellwise(dataloader, summed_error_pic, settings_pic: dict):
 
     fig = plt.figure()
     fig.set_figheight(5)
-    plt.imshow(summed_error_pic.T, cmap="RdBu_r", extent=extent)
+    plt.imshow(summed_error_pic.T, cmap="jp", extent=extent)
     plt.gca().invert_yaxis()
     plt.ylabel("x [m]")
     plt.xlabel("y [m]")
