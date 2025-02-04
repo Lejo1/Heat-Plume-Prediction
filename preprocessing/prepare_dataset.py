@@ -39,11 +39,26 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
     inputs = expand_property_names(args["inputs"])
     outputs = expand_property_names(args["outputs"])
     time_init = "   0 Time  0.00000E+00 y"
-    time_prediction = "   4 Time  2.75000E+01 y" #
-    pflotran_settings = load_yaml(args["data_raw"] / "inputs" / "settings.yaml")
-    dims = np.array(pflotran_settings["grid"]["ncells"])
-    total_size = np.array(pflotran_settings["grid"]["size"])
-    cell_size = total_size/dims
+    time_prediction = "   1 Time  2.75000E+01 y" # TODO make this more general, e.g. by checking if 2.75 is in the time string
+
+    try: # old data
+        pflotran_settings = load_yaml(args["data_raw"] / "inputs" / "settings.yaml")
+        total_size = np.array(pflotran_settings["grid"]["size"])
+        dims = np.array(pflotran_settings["grid"]["ncells"])
+        cell_size = total_size/dims
+        resolution = cell_size[0] # TODO if not all cells have the same size!
+        time_prediction = "   4 Time  2.75000E+01 y" 
+    except: # new data (2025)
+        pflotran_settings = load_yaml(args["data_raw"] / "settings.yaml")
+        # resolution = np.array(pflotran_settings["grid"]["resolution"])
+        resolution = 0.625 #[m] # goal-resolution
+        total_size = np.array([*pflotran_settings["grid"]["size [m]"], resolution])
+        cell_size = resolution*np.ones(len(total_size))
+        dims = (total_size/cell_size).astype(int)
+    try:
+        refined = pflotran_settings["grid"]["refinement"]
+    except:
+        refined = False
 
     if info is None: calc = WelfordStatistics()
     tensor_transform = ToTensorTransform()
@@ -53,12 +68,12 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
         additional_inputs = [None]*total
     print_bool = True
     for data_path, run, additional_input in tqdm(zip(data_paths, runs, additional_inputs), desc="Converting", total=total):
-        x = load.load_data(data_path, time_init, inputs, dims, additional_input=additional_input, print_bool=print_bool)
-        y = load.load_data(data_path, time_prediction, outputs, dims, print_bool=print_bool)
+        x = load.load_data(data_path, time_init, inputs, dims, additional_input=additional_input, time_prediction=time_prediction, print_bool=print_bool, refined=refined, goal_resolution=resolution)
+        y = load.load_data(data_path, time_prediction, outputs, dims, time_prediction=time_prediction, print_bool=print_bool, refined=refined, goal_resolution=resolution)
         print_bool = False
         loc_hp = load.get_hp_location(x)
         x = transforms(x, loc_hp=loc_hp)
-        if info is None: calc.add_data(x) 
+        if info is None: calc.add_data(x)
         x = tensor_transform(x)
         y = transforms(y, loc_hp=loc_hp)
         if info is None: calc.add_data(y)
@@ -97,6 +112,7 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
     assert len(y.shape) == 3, "y is expected to be 2D"
     dims = list(y.shape)[1:]
     info["CellsNumber"] = dims
+    info["goal resolution"] = resolution
     try:
         info["PositionLastHP"] = loc_hp.tolist()
     except:
