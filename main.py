@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 import torch
+import sys
 
 import utils.utils_args as ut
 import preprocessing.preprocessing as prep
@@ -48,8 +49,11 @@ if __name__ == "__main__":
 
     else: # the normal way
         ut.assertions_args(args)
-
         # TODO eingerückt oder nicht??
+    
+    log_file = open(args["destination"]/"output.log", "w")
+    sys.stdout, sys.stderr = log_file, log_file
+
     ut.make_paths(args) # and check if data / model exists
     ut.save_yaml(args, args["destination"] / "command_line_arguments.yaml")
 
@@ -58,3 +62,4 @@ if __name__ == "__main__":
     model = train(args)
 
     print("Done")
+    log_file.close()
