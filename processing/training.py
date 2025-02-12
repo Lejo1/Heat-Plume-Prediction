@@ -12,6 +12,7 @@ from processing.solver import Solver
 from postprocessing.visualization import visualizations
 from postprocessing.measurements import measure_losses_paper24
 from utils.utils_args import save_yaml
+from processing.losses import CombiLoss
 
 def train(args: dict):
     np.random.seed(1)
@@ -33,7 +34,7 @@ def train(args: dict):
         if vT_case == "temperature":
             kernel_size = 4 # best setting from optimization with optuna
         elif vT_case == "velocities":
-            kernel_size=5 # best setting from optimization with optuna
+            kernel_size = 5 # best setting from optimization with optuna
         model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=4, init_features=32, kernel_size=kernel_size).float() # best setting from optimization with optuna
     model.to(args["device"])
     
@@ -43,10 +44,10 @@ def train(args: dict):
         model.eval()
 
     if args["case"] in ["train", "finetune"]:
-        if vT_case == "temperature":
-            loss = L1Loss()
-        elif vT_case == "velocities":
-            loss = MSELoss() # best setting from optimization with optuna
+        # if vT_case == "temperature":
+        #     loss = L1Loss()
+        # elif vT_case == "velocities":
+        loss = CombiLoss(0.75) # MSELoss() # best setting from optimization with optuna
         solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"))
         training_time = datetime.now()
         try:
