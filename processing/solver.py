@@ -100,11 +100,11 @@ class Solver(object):
                 # self.lr_scheduler.step(val_epoch_loss)
 
             except KeyboardInterrupt:
-                # model_tmp = UNetHalfPad2(in_channels=len(settings.inputs), out_channels=1) # UNet
-                # model_tmp.load_state_dict(self.best_model_params["state_dict"])
-                # model_tmp.to(settings.device)
-                # model_tmp.save(settings.destination, model_name=f"interim_model_e{epoch}.pt")
-                # visualizations(model_tmp, self.val_dataloader, settings.device, plot_path=settings.destination / f"plot_val_interim_e{epoch}", amount_datapoints_to_visu=2, pic_format="png")
+                model_tmp = UNetNoPad2(in_channels=3, out_channels=2, depth=4, init_features=32, kernel_size=5)
+                model_tmp.load_state_dict(self.best_model_params["state_dict"])
+                model_tmp.to(args["device"])
+                model_tmp.save(args["destination"], model_name=f"interim_model_e{epoch}.pt")
+                visualizations(model_tmp, self.val_dataloader, args, plot_path=args["destination"] / f"plot_val_interim_e{epoch}", amount_datapoints_to_visu=2, pic_format="png")
 
                 try:
                     new_lr = float(input("\nNew learning rate: "))
