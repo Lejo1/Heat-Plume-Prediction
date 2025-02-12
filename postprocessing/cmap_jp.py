@@ -17,7 +17,13 @@ def new_cmap(colors, nodes, name:str=None):
             print("Already defined")
 
 # shifted hot colormap to better capture details
-name = "jp"
+name = "jp_temperature"
 colors = ["white", "blue", "darkred", "orange", "white"]
 nodes = np.array([10.6, 11.7, 12., 13.5, 15.6])
+new_cmap(colors, nodes, name)
+
+# shifted hot colormap to better capture details
+name = "jp_linear"
+colors = ["white", "blue", "darkred", "orange", "white"]
+nodes = np.array([0., 1., 2., 3., 4.])
 new_cmap(colors, nodes, name)

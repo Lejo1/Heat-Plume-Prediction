@@ -4,6 +4,10 @@ from math import inf
 from typing import Dict
 import pathlib
 
+# set backend for matplotlib, necessary if no GUI is available, e.g. in tmux
+import matplotlib
+matplotlib.use('Agg')
+
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -30,7 +34,12 @@ class DataToVisualize:
     def __post_init__(self):
         extent = (0,int(self.extent_highs[0]),int(self.extent_highs[1]),0)
 
-        self.imshowargs = {"cmap": "jp", 
+        if "temperature" in self.physical_property.lower():
+            cmap = "jp_temperature"
+        else:
+            cmap = "jp_linear"
+            
+        self.imshowargs = {"cmap": cmap, 
                            "extent": extent,
                            "interpolation": "nearest",}
         if self.vmax is not None:
@@ -39,7 +48,7 @@ class DataToVisualize:
             self.imshowargs["vmin"] = self.vmin
 
         self.contourfargs = {"levels": np.arange(10.4, 16, 0.25), 
-                             "cmap": "jp", 
+                             "cmap": cmap, 
                              "extent": extent}
         
         T_gwf = 10.6
@@ -151,10 +160,10 @@ def prepare_data_to_plot(x: torch.Tensor, y: torch.Tensor, y_out:torch.Tensor, i
         dict_to_plot[f"{label}_true"] = DataToVisualize(y_reduced[index], "Label", label, extent_highs, vmax=outs_max[index], vmin=outs_min[index])
         dict_to_plot[f"{label}_out"] = DataToVisualize(y_out[index], "Prediction", label, extent_highs, vmax=outs_max[index], vmin=outs_min[index])
         dict_to_plot[f"{label}_error"] = DataToVisualize(torch.abs(y_reduced[index]-y_out[index]), "Absolute Error", label, extent_highs)
-    # inputs = info["Inputs"].keys()
-    # for input in inputs:
-    #     index = info["Inputs"][input]["index"]
-    #     dict_to_plot[input] = DataToVisualize(x[index], "Input", input, extent_highs)
+    inputs = info["Inputs"].keys()
+    for input in inputs:
+        index = info["Inputs"][input]["index"]
+        dict_to_plot[input] = DataToVisualize(x[index], "Input", input, extent_highs)
 
     return dict_to_plot
 
@@ -267,7 +276,7 @@ def plot_avg_error_cellwise(dataloader, summed_error_pic, settings_pic: dict):
 
     fig = plt.figure()
     fig.set_figheight(5)
-    plt.imshow(summed_error_pic.T, cmap="jp", extent=extent)
+    plt.imshow(summed_error_pic.T, cmap="jp_temperature", extent=extent)
     plt.gca().invert_yaxis()
     plt.ylabel("x [m]")
     plt.xlabel("y [m]")
