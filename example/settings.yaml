@@ -1,0 +1,6 @@
+activation: ReLU
+depth: 4
+init_features: 32
+inputs: pki
+kernel_size: 5
+optimizer: Adam

@@ -3,7 +3,7 @@ case: train
 data_prep: /scratch/sgs/pelzerja/datasets_prepared/allin1/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t
 data_raw: /scratch/sgs/pelzerja/datasets/allin1/dataset_giant_100hp_varyK
 destination: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs/allin1/predict_T_add_s_outer_hyperparam_opt
-device: cuda:0
+device: 0
 epochs: 50
 inputs: ixydkc
 len_box: 256

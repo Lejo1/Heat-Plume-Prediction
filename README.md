@@ -100,6 +100,8 @@ with newest version of main.py script (includes `cheat = True`)
 - define a `command_line_argument.yaml` in `NAME_OF_DIR_PREDICT_V` acc. to example in `example/command_line_arguments_v.yaml`
 - run `python main.py --destination NAME_OF_DIR_PREDICT_V`
 ### 2nd step (calculate streamlines and prepare inputs for next step):
+first prepare data acc. to `example\command_line_arguments_ixyk_T for_s.yaml` and be aware of the name of `data_prep` for the next step (by `calling python main.py --destination TMP_DIR_IXYK_T` - don't worry if the training gives an error. The data is prepared and saved in the expected directory).
+
 this step prepares the data for the 3rd step into the directory `NAME_OF_DATA_RAW_DIR inputs_INPUTS outputs_OUTPUTS prep_with_NAME_OF_DIR_PREDICT_V`:
 - call processing/streamlines_main.py like:
     ```
@@ -108,6 +110,8 @@ this step prepares the data for the 3rd step into the directory `NAME_OF_DATA_RA
     based_on_predicted_v = True
     build_streamlines(model_name, dataset_name, based_on_predicted_v)
     ```
+- this requires a file `settings.yaml` in the folder of the model NAME_OF_DIR_PREDICT_V like `example/settings.yaml`
+
 ### 3rd step (predict T):
 - check that the required prepared dataset exists
 - define a `command_line_argument.yaml` in `NAME_OF_DIR_PREDICT_T` acc. to example in `example/command_line_arguments_T.yaml`

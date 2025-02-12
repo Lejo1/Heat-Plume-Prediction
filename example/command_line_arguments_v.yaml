@@ -3,7 +3,7 @@ case: train
 data_prep: /scratch/sgs/pelzerja/datasets_prepared/allin1/dataset_giant_100hp_varyK inputs_pki outputs_xy
 data_raw: /scratch/sgs/pelzerja/datasets/allin1/dataset_giant_100hp_varyK
 destination: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs/allin1/predict_v hyperparam_opt/BEST_predict_v_v4
-device: cuda:0
+device: 0
 epochs: 20
 inputs: pki
 len_box: 256
