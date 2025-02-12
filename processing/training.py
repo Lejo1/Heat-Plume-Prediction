@@ -19,7 +19,8 @@ def train(args: dict):
     torch.manual_seed(1)
     multiprocessing.set_start_method("spawn", force=True)
 
-    input_channels, output_channels, dataloaders = init_data(args)
+    tmp_bool_cutouts = True
+    input_channels, output_channels, dataloaders = init_data(args, tmp_bool_cutouts=tmp_bool_cutouts)
     if output_channels == 1:
         vT_case = "temperature"
     elif output_channels == 2:
@@ -67,10 +68,11 @@ def train(args: dict):
     # postprocessing
     # save_all_measurements(args, len(dataloaders["val"].dataset), times={}, solver=solver) #, errors)
     
-    metrics = measure_losses_paper24(model, dataloaders, args, vT_case=vT_case)
+    metrics = measure_losses_paper24(model, dataloaders, args, vT_case=vT_case, tmp_bool_cutouts=tmp_bool_cutouts)
     save_yaml(metrics, args["destination"] / "metrics_paper24.yaml")
 
-    dataloaders = load_all_datasets_in_full(args)
+    if tmp_bool_cutouts:
+        dataloaders = load_all_datasets_in_full(args)
     for case in ["train", "val", "test"]:
         visualizations(model, dataloaders[case], args, plot_path=args["destination"] / case, amount_datapoints_to_visu=1, pic_format="png")
 
