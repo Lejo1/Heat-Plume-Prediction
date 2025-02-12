@@ -41,97 +41,97 @@ def preprocessing(args:dict):
     if args["case"] == "train": # TODO also finetune?
         ua.save_yaml(info, args["model"]/"info.yaml")
 
-def preprocessing_allin1(args: dict):
-    args_domain_with_1hpnn_params = deepcopy(args)
-    case_1hpnn = args["allin1_prepro_n_case"]
+# def preprocessing_allin1(args: dict):
+#     args_domain_with_1hpnn_params = deepcopy(args)
+#     case_1hpnn = args["allin1_prepro_n_case"]
 
-    run_ids = ua.get_run_ids_from_raw(args["data_raw"])
-    additional_inputs = []
-    assert len(run_ids) == 3, "allin1 requires 3 runs for train, val, test"
+#     run_ids = ua.get_run_ids_from_raw(args["data_raw"])
+#     additional_inputs = []
+#     assert len(run_ids) == 3, "allin1 requires 3 runs for train, val, test"
 
-    args_1hpnn = set_args_1hpnn(case_1hpnn)
-    args_extend = set_extend_args()    
+#     args_1hpnn = set_args_1hpnn(case_1hpnn)
+#     args_extend = set_extend_args()    
 
-    args_domain_with_1hpnn_params["inputs"] = args_1hpnn["inputs"]
-    args_domain_with_1hpnn_params["model"] = args_1hpnn["model"]
-    args_domain_with_1hpnn_params["data_prep"] = args["data_raw"].name + " inputs_" + args_1hpnn["inputs"]
-    args_domain_with_1hpnn_params["destination"] = None #irrelevant
-    ua.make_paths(args_domain_with_1hpnn_params, make_model_and_destination_bool=False)
+#     args_domain_with_1hpnn_params["inputs"] = args_1hpnn["inputs"]
+#     args_domain_with_1hpnn_params["model"] = args_1hpnn["model"]
+#     args_domain_with_1hpnn_params["data_prep"] = args["data_raw"].name + " inputs_" + args_1hpnn["inputs"]
+#     args_domain_with_1hpnn_params["destination"] = None #irrelevant
+#     ua.make_paths(args_domain_with_1hpnn_params, make_model_and_destination_bool=False)
 
-    for run_id in tqdm(run_ids, desc="Runs"):
-        preprocessing_dir = args_domain_with_1hpnn_params["data_prep"] / f"Preprocessed {case_1hpnn}"
-        preprocessing_dir.mkdir(parents=True, exist_ok=True)
-        preprocessing_destination = preprocessing_dir / f"RUN_{run_id}_n.pt"
+#     for run_id in tqdm(run_ids, desc="Runs"):
+#         preprocessing_dir = args_domain_with_1hpnn_params["data_prep"] / f"Preprocessed {case_1hpnn}"
+#         preprocessing_dir.mkdir(parents=True, exist_ok=True)
+#         preprocessing_destination = preprocessing_dir / f"RUN_{run_id}_n.pt"
 
-        if (preprocessing_destination).exists():
-            print(f"Loading domain prediction from 1hpnn+ep from {preprocessing_destination}")
-            print(args["device"])
-            additional_input = torch.load(preprocessing_destination, map_location=args["device"])
-            additional_input = additional_input.detach()
+#         if (preprocessing_destination).exists():
+#             print(f"Loading domain prediction from 1hpnn+ep from {preprocessing_destination}")
+#             print(args["device"])
+#             additional_input = torch.load(preprocessing_destination, map_location=args["device"])
+#             additional_input = additional_input.detach()
 
-        else:
-            print(f"Preparing domain for allin1 with {case_1hpnn}+(ep)")
+#         else:
+#             print(f"Preparing domain for allin1 with {case_1hpnn}+(ep)")
 
-            model_1hp, info_1hp = load_1hp_model_and_info(case_1hpnn, args_1hpnn, args["device"])
+#             model_1hp, info_1hp = load_1hp_model_and_info(case_1hpnn, args_1hpnn, args["device"])
 
-            # prepare allin1 domain with 1hp-model normalization for cutting out hp boxes
-            if is_unprepared(args_domain_with_1hpnn_params["data_prep"]): # or args.case == "test":
-                print(f"Preparing domain for preprocessing at {args_domain_with_1hpnn_params['data_prep']}")
-                prepare_dataset(args_domain_with_1hpnn_params, info=info_1hp) # TODO make faster by ignoring "s" in prep and adding dummy dimension afterwards
+#             # prepare allin1 domain with 1hp-model normalization for cutting out hp boxes
+#             if is_unprepared(args_domain_with_1hpnn_params["data_prep"]): # or args.case == "test":
+#                 print(f"Preparing domain for preprocessing at {args_domain_with_1hpnn_params['data_prep']}")
+#                 prepare_dataset(args_domain_with_1hpnn_params, info=info_1hp) # TODO make faster by ignoring "s" in prep and adding dummy dimension afterwards
 
 
-            # extract hp boxes
-            domain = Domain(args_domain_with_1hpnn_params["data_prep"], stitching_method="max", file_name=f"RUN_{run_id}.pt", device=args["device"])
-            threshold_T = domain.norm(10.7, property = "Temperature [C]")
-            single_hps, hps_inputs = domain.extract_hp_boxes(args["device"])
+#             # extract hp boxes
+#             domain = Domain(args_domain_with_1hpnn_params["data_prep"], stitching_method="max", file_name=f"RUN_{run_id}.pt", device=args["device"])
+#             threshold_T = domain.norm(10.7, property = "Temperature [C]")
+#             single_hps, hps_inputs = domain.extract_hp_boxes(args["device"])
 
-            hp: HeatPumpBox
-            # for hp in tqdm(single_hps, desc="Applying 1HPNN + ep"):
-            #     if case_1hpnn == "gt":
-            #         hp.primary_temp_field = hp.label.squeeze(0)
-            #     else:
-            #         hp.primary_temp_field = hp.apply_nn(case_1hpnn, model_1hp, device=args["device"], info=info_1hp) # TODO prediction is shitty -> check for better 1hp-nn
+#             hp: HeatPumpBox
+#             # for hp in tqdm(single_hps, desc="Applying 1HPNN + ep"):
+#             #     if case_1hpnn == "gt":
+#             #         hp.primary_temp_field = hp.label.squeeze(0)
+#             #     else:
+#             #         hp.primary_temp_field = hp.apply_nn(case_1hpnn, model_1hp, device=args["device"], info=info_1hp) # TODO prediction is shitty -> check for better 1hp-nn
 
-            #     # extend plumes
-            #     # while hp.primary_temp_field[-1].max() < threshold_T:
-            #     #     hp.extend_plume()
+#             #     # extend plumes
+#             #     # while hp.primary_temp_field[-1].max() < threshold_T:
+#             #     #     hp.extend_plume()
                 
-            #     domain.add_hp(hp)
+#             #     domain.add_hp(hp)
 
-            # matrix of all extracted hp boxes for nn
-            if case_1hpnn == "gt":
-                predictions = torch.stack([hp.label.squeeze() for hp in single_hps])
-            else:
-                predictions = apply_nn_batch(case_1hpnn, hps_inputs, model_1hp, device=args["device"])
+#             # matrix of all extracted hp boxes for nn
+#             if case_1hpnn == "gt":
+#                 predictions = torch.stack([hp.label.squeeze() for hp in single_hps])
+#             else:
+#                 predictions = apply_nn_batch(case_1hpnn, hps_inputs, model_1hp, device=args["device"])
 
-            for hp, prediction in tqdm(zip(single_hps, predictions), desc="Adding box-predictions (+ep) to domain"):
-                hp.primary_temp_field = prediction
-                domain.add_hp(hp)
+#             for hp, prediction in tqdm(zip(single_hps, predictions), desc="Adding box-predictions (+ep) to domain"):
+#                 hp.primary_temp_field = prediction
+#                 domain.add_hp(hp)
             
 
-            plt.subplot(2, 2, 1)
-            plt.imshow(domain.inputs[1].detach().cpu().numpy().T)
-            plt.colorbar()
-            plt.subplot(2, 2, 2)
-            plt.imshow(domain.inputs[0].detach().cpu().numpy().T)
-            plt.colorbar()
-            plt.subplot(2, 2, 3)
-            plt.imshow(domain.prediction.detach().cpu().numpy().T)
-            plt.colorbar()
-            plt.subplot(2, 2, 4)
-            plt.imshow(domain.label.detach().cpu().numpy().T)
-            plt.colorbar()
-            plt.show()
+#             plt.subplot(2, 2, 1)
+#             plt.imshow(domain.inputs[1].detach().cpu().numpy().T)
+#             plt.colorbar()
+#             plt.subplot(2, 2, 2)
+#             plt.imshow(domain.inputs[0].detach().cpu().numpy().T)
+#             plt.colorbar()
+#             plt.subplot(2, 2, 3)
+#             plt.imshow(domain.prediction.detach().cpu().numpy().T)
+#             plt.colorbar()
+#             plt.subplot(2, 2, 4)
+#             plt.imshow(domain.label.detach().cpu().numpy().T)
+#             plt.colorbar()
+#             plt.show()
 
-            if len(domain.prediction.shape) == 2:
-                domain.prediction = domain.prediction.unsqueeze(0)
-            additional_input = domain.prediction.detach().cpu()
-            print(f"Saving domain to {preprocessing_destination}")
-            torch.save(additional_input, preprocessing_destination)
-            ua.save_yaml({"case 1hpnn": case_1hpnn, "1hp": args_1hpnn, "extend": args_extend}, preprocessing_destination.parent / "args.yaml")
+#             if len(domain.prediction.shape) == 2:
+#                 domain.prediction = domain.prediction.unsqueeze(0)
+#             additional_input = domain.prediction.detach().cpu()
+#             print(f"Saving domain to {preprocessing_destination}")
+#             torch.save(additional_input, preprocessing_destination)
+#             ua.save_yaml({"case 1hpnn": case_1hpnn, "1hp": args_1hpnn, "extend": args_extend}, preprocessing_destination.parent / "args.yaml")
 
-        additional_inputs.append(additional_input) # TODO better as dict?
-    return additional_inputs
+#         additional_inputs.append(additional_input) # TODO better as dict?
+#     return additional_inputs
 
 def preprocessing_allin1_v2(args: dict):
     args_domain_with_1hpnn_params = deepcopy(args)
