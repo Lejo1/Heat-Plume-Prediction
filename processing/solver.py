@@ -59,15 +59,16 @@ class Solver(object):
                 # Set lr according to schedule
                 if epoch in self.lr_schedule.keys():
                     self.opt.param_groups[0]["lr"] = self.lr_schedule[epoch]
+                    
+                # Validation
+                # if epoch % 10 == 0:
+                self.model.eval()
+                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
 
                 # Training
                 self.model.train()
                 train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device)
 
-                # Validation
-                # if epoch % 10 == 0:
-                self.model.eval()
-                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
                 # if epoch % 10 == 0:
                 for metric_name, metric_value in other_losses_val.items():
                     writer.add_scalar(f"val {metric_name}", metric_value, epoch)
@@ -86,15 +87,14 @@ class Solver(object):
                         "epoch": epoch,
                         "loss": val_epoch_loss,
                         "train loss": train_epoch_loss,
-                        "val RMSE": val_epoch_loss**0.5, # TODO only true if loss_func == MSELoss()
-                        "train RMSE": train_epoch_loss**0.5, #TODO only true if loss_func == MSELoss()
+                        # "val RMSE": val_epoch_loss**0.5, # TODO only true if loss_func == MSELoss()
+                        # "train RMSE": train_epoch_loss**0.5, #TODO only true if loss_func == MSELoss()
                         "state_dict": self.model.state_dict(),
                         "optimizer": self.opt.state_dict(),
                         "parameters": self.model.parameters(),
                         "training time in sec": (time.perf_counter() - start_time),
                     }
-
-                    if True:
+                    if False:
                         self.model.save(args["destination"], model_name=f"best_model_e{epoch}.pt")
 
                 # self.lr_scheduler.step(val_epoch_loss)
