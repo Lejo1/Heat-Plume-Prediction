@@ -1,4 +1,3 @@
-import argparse
 import csv
 import logging
 import pathlib
@@ -12,8 +11,8 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 
-# from postprocessing.visualization import visualizations
-from processing.networks.unet import UNet
+from postprocessing.visualization import visualizations
+from processing.networks.unetVariants import UNetNoPad2
 from processing.networks.model import weights_init
 
 class KLD_log():
@@ -39,12 +38,12 @@ class Solver(object):
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
         # contains the epoch and learning rate, when lr changes
         self.lr_schedule = {0: self.opt.param_groups[0]["lr"]}
-        # self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.opt, patience=10, cooldown=10, factor=0.5)
+        # self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.opt, patience=5, cooldown=10, factor=0.5)
 
         if not self.finetune:
             self.model.apply(weights_init)
         
-        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss()}
+        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss(), "X-MSE": None, "Y-MSE": None}
 
     def train(self, args: dict):
         manual_seed(0)
@@ -147,7 +146,12 @@ class Solver(object):
         # Calculate metrics
         metric_values = {}
         for metric_name, metric in self.metrics.items():
-            metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
+            if metric_name == "X-MSE":
+                metric_values[metric_name] = MSELoss()(y_pred[:, 0, :, :], y_reduced[:, 0, :, :]).detach().item()
+            elif metric_name == "Y-MSE":
+                metric_values[metric_name] = MSELoss()(y_pred[:, 1, :, :], y_reduced[:, 1, :, :]).detach().item()
+            else:
+                metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
             
         return epoch_loss, metric_values
 
