@@ -51,7 +51,7 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
     except: # new data (2025)
         pflotran_settings = load_yaml(args["data_raw"] / "settings.yaml")
         # resolution = np.array(pflotran_settings["grid"]["resolution"])
-        resolution = 0.625 #[m] # goal-resolution
+        resolution = 5 #[m] # goal-resolution
         total_size = np.array([*pflotran_settings["grid"]["size [m]"], resolution])
         cell_size = resolution*np.ones(len(total_size))
         dims = (total_size/cell_size).astype(int)
