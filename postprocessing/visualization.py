@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.unet import UNet
 from processing.pipelines.extend_plumes_old import infer_nopad, update_params
-from postprocessing.visu_utils import _aligned_colorbar
+from postprocessing.visu_utils import aligned_colorbar
 import postprocessing.cmap_jp
 
 @dataclass
@@ -185,7 +185,7 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
             plt.gca().invert_yaxis()
 
             plt.ylabel("x [m]")
-            _aligned_colorbar(label=datapoint.physical_property)
+            aligned_colorbar(label=datapoint.physical_property)
 
         # plt.sca(axes[-1]) # TODO DONT WANT THAT ANYMORE??? FLIPS MY PICS
         plt.xlabel("y [m]")
@@ -205,7 +205,7 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
 
             plt.ylabel("x [m]")
             plt.xlabel("y [m]")
-            _aligned_colorbar(label=datapoint.physical_property)
+            aligned_colorbar(label=datapoint.physical_property)
             plt.tight_layout()
             ext_inner = "_inner" if only_inner else ""
             plt.savefig(f"{name_pic}{ext_inner}_{name}.{settings_pic['format']}", **settings_pic)
@@ -223,7 +223,7 @@ def plot_isolines(data: Dict[str, DataToVisualize], name_pic: str, settings_pic:
             plt.title("Isolines of "+data[name].category)
             plt.contourf(data[name].data.T, **data[name].contourfargs)
             plt.ylabel("x [m]")
-            _aligned_colorbar(label=data[name].physical_property, ticks=[11.6, 15.6])
+            aligned_colorbar(label=data[name].physical_property, ticks=[11.6, 15.6])
         except:
             pass
 
@@ -281,7 +281,7 @@ def plot_avg_error_cellwise(dataloader, summed_error_pic, settings_pic: dict):
     plt.ylabel("x [m]")
     plt.xlabel("y [m]")
     plt.title("Cellwise Averaged Error")
-    _aligned_colorbar(label="Temperature [°C]")
+    aligned_colorbar(label="Temperature [°C]")
 
     plt.tight_layout()
     plt.savefig(f"{settings_pic['folder']}/avg_error.{settings_pic['format']}", format=settings_pic['format'])

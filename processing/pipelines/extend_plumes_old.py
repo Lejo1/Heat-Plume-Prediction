@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import torch
 import yaml
 
-from postprocessing.visu_utils import _aligned_colorbar
+from postprocessing.visu_utils import aligned_colorbar
 from processing.networks.unetVariants import *
 from processing.networks.model import Model
 
@@ -30,7 +30,7 @@ def load_extend(model_path, dataset_prep, run_id, visu=False, model_name:str = "
     if visu:
         plt.figure(figsize=(15, 5))
         plt.imshow(labels[0, :, :].T)
-        _aligned_colorbar()
+        aligned_colorbar()
         plt.show()
 
     model = UNetHalfPad2(in_channels=3).float() ## VERSION for only T - WIP: in_channels=1
@@ -64,13 +64,13 @@ def visu_front(box_front, output_front, labels, params):
     axes[0].imshow(labels[0,:box_front].detach().numpy().T, **params["colorargs"])
     axes[0].set_title("Label")
     plt.sca(axes[0])
-    _aligned_colorbar(axes[0].imshow(labels[0,:box_front].detach().numpy().T))
+    aligned_colorbar(axes[0].imshow(labels[0,:box_front].detach().numpy().T))
     axes[1].imshow(output_front[0, 0].detach().numpy().T, **params["colorargs"])
     axes[1].set_title("Prediction")
     axes[2].imshow((labels[0,:box_front]-output_front[0, 0]).detach().numpy().T)
     axes[2].set_title("Difference")
     plt.sca(axes[2])
-    _aligned_colorbar(axes[2].imshow((labels[0,:box_front]-output_front[0, 0]).detach().numpy().T))
+    aligned_colorbar(axes[2].imshow((labels[0,:box_front]-output_front[0, 0]).detach().numpy().T))
     plt.show()
 
 def assertions_infer(params):
@@ -181,20 +181,20 @@ def visu_rescaled_dp(output_all, labels, params, plot_name=None):
     plt.imshow(label_rescaled[params["start_visu"]:params["end_visu"]].T, **params["colorargs"])
     plt.title("Label: Temperature [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
 
     plt.sca(axes[1])
     plt.imshow(output_lessskip2_rescaled[params["start_visu"]:params["end_visu"]].T, **params["colorargs"])
     plt.title("Prediction: Temperature [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
 
     plt.sca(axes[2])
     plt.imshow((output_lessskip2_rescaled - label_rescaled)[params["start_visu"]:params["end_visu"]].T, **params["colorargs"])
     plt.title("Difference: Prediction - Label [°C]")
     plt.xlabel("x [cells]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
 
     plt.tight_layout()
     if plot_name:
@@ -231,35 +231,35 @@ def produce_front_comparison_pic():
     plt.imshow(label_rescaled[vis_start:1000].T, cmap="RdBu_r")
     plt.title("Label [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
     plt.sca(axes[1])
     output_front_resc = rescale_temp(deepcopy(output_front), params["temp_norm"])
     plt.imshow(output_front_resc[vis_start:1000].T, cmap="RdBu_r")
     plt.title("Prediction, both steps [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
     plt.sca(axes[2])
     output_nofront_resc = rescale_temp(deepcopy(output_nofront), params["temp_norm"])
     plt.imshow(output_nofront_resc[vis_start:1000].T, cmap="RdBu_r")
     plt.title("Prediction, only 2nd step [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
     plt.sca(axes[3])
     plt.imshow((label_rescaled-output_front_resc)[vis_start:1000].T, cmap="RdBu_r")
     plt.title("Difference label to prediction, both steps [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
     plt.sca(axes[4])
     plt.imshow((label_rescaled-output_nofront_resc)[vis_start:1000].T, cmap="RdBu_r")
     plt.title("Difference label to prediction, only 2nd step [°C]")
     plt.ylabel("y [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
     plt.sca(axes[5])
     plt.imshow((output_front_resc-output_nofront_resc)[vis_start:1000].T, cmap="RdBu_r")
     plt.title("Difference: both steps - only 2nd step [°C]")
     plt.ylabel("y [cells]")
     plt.xlabel("x [cells]")
-    _aligned_colorbar()
+    aligned_colorbar()
 
     plt.tight_layout()
     plt.savefig(f"extend_plumes/model_2ndRound_run{run_id}_frontComparison.png", dpi=500)
