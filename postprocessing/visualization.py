@@ -232,9 +232,9 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
         #         CS = plt.contour(torch.flip(datapoint.data, dims=[1]).T, **datapoint.contourargs)
         #     plt.clabel(CS, inline=1, fontsize=10)
         if(datapoint.name == "Absolute error in [°C]"):
-            plt.imshow(datapoint.data.T ,**datapoint.imshowargs, vmax=0.2)
+            plt.imshow(datapoint.data.T ,**datapoint.imshowargs)
         else:
-            plt.imshow(datapoint.data.T ,**datapoint.imshowargs, vmax=11.08, vmin=10.6)
+            plt.imshow(datapoint.data.T ,**datapoint.imshowargs)
 
         plt.gca().invert_yaxis()
         plt.ylabel("y [m]")

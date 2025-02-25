@@ -4,7 +4,6 @@ import pathlib
 
 class UNetParallel(nn.Module):
     def __init__(self, in_channels=2, out_channels=1, init_features=64, depth=5, kernel_size=4, padding_mode="replicate", dilation = 1, par_depth = 3, par_dil = (6,1), par_kern = (6,3)):
-    #def __init__(self, in_channels=2, out_channels=1, init_features=64, depth=5, kernel_size=3, padding_mode="replicate", dilation = 1, par_depth = 3, par_dil = (4,1), par_kern = (4,2)):
         super().__init__()
         features = init_features        
         self.encoders = nn.ModuleList()

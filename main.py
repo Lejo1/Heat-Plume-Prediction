@@ -18,8 +18,9 @@ from postprocessing.visualization import plot_avg_error_cellwise, visualizations
 from postprocessing.measurements import measure_loss, save_all_measurements
 from postprocessing.iterative_estimation import iterative_estimation
 from torchsummary import summary
+from preprocessing.prepare_paths import Paths2HP
 
-def run(settings: SettingsTraining):
+def run(settings: SettingsTraining, paths: Paths2HP):
     multiprocessing.set_start_method("spawn", force=True)
 
     #hyperparamter tuning, no training and visualization
@@ -40,7 +41,7 @@ def run(settings: SettingsTraining):
     elif settings.architecture == "quad":
         model = UNetQuad(in_channels=input_channels).float()
 
-    if settings.case in ["test", "finetune"]:
+    if settings.case in ["test", "finetune","iterative"]:
         model.load(settings.model, map_location=settings.device)
     
     #only visualization for evaluation, skip other stuff
@@ -51,7 +52,7 @@ def run(settings: SettingsTraining):
     #use model for iterative estimation of whole domain 
     if settings.case == "iterative":
         model.to("cpu")
-        model = iterative_estimation(model,settings)
+        model = iterative_estimation(model,settings, paths)
         return model
     
     model.to(settings.device)
@@ -146,8 +147,8 @@ if __name__ == "__main__":
     if settings.model == "default" and settings.case in ["test", "finetune", "visualize", "iterative"]:
         print(f"for case {settings.case} a model is required!")
     else:
-        settings = prepare_data_and_paths(settings)
+        settings, paths = prepare_data_and_paths(settings)
         if not settings.case == "prepare":
-            model = run(settings)
+            model = run(settings, paths)
             if args.save_inference:
                 save_inference(settings.model, len(args.inputs), settings)

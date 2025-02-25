@@ -10,7 +10,7 @@ def prepare_data_and_paths(settings:SettingsTraining):
     prepare datasets using raw data if necessary
     set up paths to those prepared datasets for future usage
     """
-    if not settings.case == "prepare":
+    if not settings.case in ["prepare"]:
         paths: Paths1HP
         paths, destination_dir = set_paths_1hpnn(settings.dataset_raw, settings.inputs, settings.dataset_prep, architecture=settings.architecture)
     else:
@@ -40,4 +40,4 @@ def prepare_data_and_paths(settings:SettingsTraining):
         if settings.case == "train":
             shutil.copyfile(paths.dataset_1st_prep_path / "info.yaml", settings.destination / "info.yaml")
         settings.save()
-        return settings
+        return settings, paths

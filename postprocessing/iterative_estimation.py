@@ -5,6 +5,7 @@ import time
 import yaml
 import numpy as np
 
+from preprocessing.prepare_paths import Paths2HP
 from torch import unsqueeze, stack
 import torch
 from tqdm.auto import tqdm
@@ -19,7 +20,7 @@ from data_stuff.transforms import NormalizeTransform
 batch = False
 save = True
 
-def iterative_estimation(model: UNet, settings: SettingsTraining):
+def iterative_estimation(model: UNet, settings: SettingsTraining,paths: Paths2HP):
     """
     Takes the given model and uses it to iteratively estimate 
     the temperature field of the domain defined in the Settings file
@@ -177,7 +178,7 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
         #apply NN
         time_start_run_1hp = time.perf_counter()
         x = unsqueeze(single_hps[current].inputs.to("cpu"), 0)
-        single_hps[current].primary_temp_field = model(x).squeeze().detach()
+        single_hps[current].primary_temp_field = single_hps[current].apply_nn(model).clone().detach()
         time_inference = time.perf_counter() - time_start_run_1hp
         avg_time_inference_all += time_inference
 
@@ -192,10 +193,8 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
 
         #plot output
         output = single_hps[current].primary_temp_field.clone().detach()
-        y = domain.reverse_norm(output.cpu())
-        temp_max = y.max()
-        temp_min = y.min()
-        dict_to_plot[f"t_out_{current}"] = DataToVisualize(y, f"Prediction hp{current}: Temperature in [°C]", extent_highs, {"vmax": temp_max, "vmin": temp_min})
+        y = domain.reverse_norm( output.squeeze(), property="Temperature [C]")
+        dict_to_plot[f"t_out_{current}"] = DataToVisualize(y, f"Prediction hp{current}: Temperature in [°C]", extent_highs)
         label = single_hps[current].label.clone().detach().squeeze()
         dict_to_plot[f"label_{current}"] = DataToVisualize(label, f"Label: Temperature in [°C]", extent_highs)
 
