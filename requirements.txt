@@ -11,4 +11,5 @@ tensorboard
 pytest
 pynvml
 ray
+ray[tune]
 torchsummary
