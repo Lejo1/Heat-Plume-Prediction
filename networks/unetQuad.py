@@ -63,7 +63,6 @@ class UNetQuad(nn.Module):
     @staticmethod
     def _block(in_channels, features, kernel_size=5, padding_mode="zeros", dilation = 1):
         return nn.Sequential(
-            # PaddingCircular(kernel_size, direction="both"),
             nn.Conv2d(
                 in_channels=in_channels,
                 out_channels=features,
@@ -74,7 +73,6 @@ class UNetQuad(nn.Module):
                 bias=True,
             ),
             nn.ReLU(inplace=True),      
-            # PaddingCircular(kernel_size, direction="both"),
             nn.Conv2d(
                 in_channels=features,
                 out_channels=features,
@@ -86,7 +84,6 @@ class UNetQuad(nn.Module):
             ),
             nn.BatchNorm2d(num_features=features),
             nn.ReLU(inplace=True),      
-            # PaddingCircular(kernel_size, direction="both"),
             nn.Conv2d(
                 in_channels=features,
                 out_channels=features,
@@ -141,25 +138,6 @@ def weights_init(m):
     elif classname.find("BatchNorm") != -1:
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.zero_()
-
-class PaddingCircular(nn.Module):
-    def __init__(self, kernel_size, direction="both"):
-        super().__init__()
-        self.pad_len = kernel_size//2
-        self.direction = direction
-
-    def forward(self, x:tensor) -> tensor:
-        if self.direction == "both":
-            padding_vector = (self.pad_len,)*4
-            result = nn.functional.pad(x, padding_vector, mode='circular')    
-
-        elif self.direction == "horizontal":
-            padding_vector = (self.pad_len,)*2 + (0,)*2
-            result = nn.functional.pad(x, padding_vector, mode='circular')    
-            padding_vector = (0,)*2 + (self.pad_len,)*2  
-            result = nn.functional.pad(result, padding_vector, mode='constant')     # or 'reflect'?
-            
-        return result
 
 # TODO replace with https://github.com/MLRichter/receptive_field_analysis_toolbox
 def calc_receptive_field(meta_model):
