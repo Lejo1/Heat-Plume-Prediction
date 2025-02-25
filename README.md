@@ -38,6 +38,7 @@
   - --notes: not used in this fork
   - --len_box: length in y-direction that the datapoints should be cut off (default `256`). Make sure, this number is less or equal to the length of the simulation run.
   - --skip_per_dir: not used in this fork
+  - --architecture: which neural architecture to choose, options are `2stages`,`quad`,`parallel`. Their differences are explained in the Master's thesis.
   
 The general workflow starts by training a model specialized for the single hp scenario using --case train. This model is reused to generate a two heat pump dataset using --case prepare. This dataset can then be used to train a model for the two hp scenario via --case train. This process can be repeated until the model can provide a good estimation for a global domain by using it with --case iterative.
 
