@@ -33,7 +33,7 @@ def prepare_data_and_paths(settings:SettingsTraining):
         return settings, paths
     else:
         # prepare dataset if not done yet OR if test=case do it anyways because of potentially different std,mean,... values than trained with
-        if not settings.dataset_prep.exists() or settings.case == "test": # if test, always want to prepare because the normalization parameters have to match
+        if settings.case == "test": # if test, always want to prepare because the normalization parameters have to match
             #some datasets may only be available in prepared form, eg those created through prepare xhp, so there is no raw dataset to be prepared
             if not settings.only_prep:
                 prepare_dataset_for_1st_stage(paths, settings)
