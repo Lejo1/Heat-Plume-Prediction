@@ -52,6 +52,7 @@ The general workflow starts by training a model specialized for the single hp sc
 - the prepared data for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
 
 ## Generating prepared dataset with multiple heat pumps:
+- This allows for the generation of datasets where a single heat plume is predicted in the presence of other already existing heatplumes
 - you need the model in models_1hp_dir (paths.yaml) and the dataset in default_raw_dir (paths.yaml)
 - the prepared dataset of the raw dataset is saved in datasets_prepared_domain_dir (paths.yaml)
 - execute
@@ -64,6 +65,7 @@ python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture 2stages -
 - the raw data for this example run can be found at [2 Heatpump raw data](https://doi.org/10.18419/darus-3652)
 
 ## Iterative application:
+- this allows for testing where heat plumes are predicted iteratively in a large domain
 - for iterative application you need the model in models_1hp_dir (paths.yaml)  and the dataset in default_raw_dir (paths.yaml)
 - ensure that the hyperparameters from the model defined by --model are the same as in e.g. networks/unet.py (depending on the architecture)
 - if they are different adjust the hyperparameters in the code by hand
