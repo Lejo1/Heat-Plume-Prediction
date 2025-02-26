@@ -48,25 +48,33 @@ The general workflow starts by training a model specialized for the single hp sc
      ```
      python main.py --dataset_prep 1HP --epoch 10 --architecture 2stages --inputs gksit --visualize True --device cuda:0 --destination unet_standard
      ```
+- the resulting model and visualizations (if enabled) can then be found in models_1hp_dir (paths.yaml) in the subfolder "/1hpnn"
+- the prepared data for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
 
 ## Generating prepared dataset with multiple heat pumps:
 - you need the model in models_1hp_dir (paths.yaml) and the dataset in default_raw_dir (paths.yaml)
-- the images of the dataset end up in `runs/2hpnn`, the resulting dataset in datasets_prepared_dir_2hp (paths.yaml)
+- the prepared dataset of the raw dataset is saved in datasets_prepared_domain_dir (paths.yaml)
 - execute
 ```
 python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture 2stages --inputs gksit --model unet_stand_f64_d5_k4_2500dp --visualize True --case prepare --destination test_cuda --device cuda:0
-
-
 ```
+- the resulting dataset can be found in datasets_prepared_dir_2hp (paths.yaml)
+- the new datapoints are also visualized in models_2hp_dir (paths.yaml)
+- the model for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
+- the raw data for this example run can be found at [2 Heatpump raw data](https://doi.org/10.18419/darus-3652)
 
 ## Iterative application:
 - for iterative application you need the model in models_1hp_dir (paths.yaml)  and the dataset in default_raw_dir (paths.yaml)
 - ensure that the hyperparameters from the model defined by --model are the same as in e.g. networks/unet.py (depending on the architecture)
-- if they are different adjust the hyperparameters in the code by hand 
+- if they are different adjust the hyperparameters in the code by hand
+- the prepared dataset of the raw dataset is saved in datasets_prepared_dir (paths.yaml)
 - execute
   ```
 python main.py --dataset_raw dataset_2hps_1fixed_1000dp --case iterative --model unet_stand_f64_d5_k4_2500dp --architecture 2stages  --inputs gksit --destination example_application
   ```
+- the results are visualized in models_1hp_dir (paths.yaml) in the subfolder "/1hpnn"
+- the model for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
+- the raw data for this example run can be found at [2 Heatpump raw data](https://doi.org/10.18419/darus-3652)
 
 ## Finding the results:
 - resulting model (`model.pt`) + normalization parameters (info.yaml) used can be found in `runs/1hpnn/DESTINATION` with `DESTINATION` being the user defined or default name in the call of main.py
