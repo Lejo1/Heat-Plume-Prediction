@@ -26,8 +26,11 @@ def prepare_data_and_paths(settings:SettingsTraining):
 
     if settings.case == "prepare":
         #generate prepared dataset for raw datasets with multiple heat pumps
+        if settings.device != "cpu":
+            print("Devices other than cpu not supported! Switching to cpu")
+            settings.device = "cpu"
         prepare_xhp_dataset(paths, settings)
-        return settings
+        return settings, paths
     else:
         # prepare dataset if not done yet OR if test=case do it anyways because of potentially different std,mean,... values than trained with
         if not settings.dataset_prep.exists() or settings.case == "test": # if test, always want to prepare because the normalization parameters have to match

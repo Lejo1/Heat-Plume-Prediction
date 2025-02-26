@@ -126,7 +126,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
         
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_raw", type=str, default="xiaoyu_smallish_1000dp_1hp_const_k", help="Name of the raw dataset (without inputs)")
+    parser.add_argument("--dataset_raw", type=str, default="dataset_2hps_1fixed_1000dp", help="Name of the raw dataset (without inputs)")
     parser.add_argument("--dataset_prep", type=str, default="", help="Name of the prepared dataset")
     parser.add_argument("--device", type=str, default="cuda:0", help="device for torch (cpu, gpu)")
     parser.add_argument("--epochs", type=int, default=10000, help="For how many epochs the network should be trained")

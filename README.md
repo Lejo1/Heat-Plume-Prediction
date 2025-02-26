@@ -22,7 +22,7 @@
 ## Main.py
 - all operations are executed via main.py and the following main arguments:
   - --case: operation of current exection, e.g `train` for training a network, `iterative` for iterative application and `prep_xhp` for preparing dataset with multiple heat pumps  (default `train`)
-  - --dataset_raw: name of the raw dataset saved in the raw directory specified in paths.yaml (default `dataset_2d_small_1000dp`)
+  - --dataset_raw: name of the raw dataset saved in the raw directory specified in paths.yaml (default `dataset_2hps_1fixed_1000dp`)
   - --dataset_prep: name of the prepared dataset saved in the prep directory specified in paths.yaml (default ``)
   - --model: model name saved in models directory specified in paths.yaml (default `default`)
   - --destination: destination folder where the results of the execution are saved (default ``)
@@ -46,7 +46,7 @@ The general workflow starts by training a model specialized for the single hp sc
 - for training you need a dataset in datasets_prepared_dir or default_raw_dir (paths.yaml)
 - execute
      ```
-     python main.py --dataset_prep 12HP_2500dp --epoch 8000 --architecture quad --inputs gksit --visualize True --device cuda:0 --destination unet_quad
+     python main.py --dataset_prep 1HP --epoch 10 --architecture 2stages --inputs gksit --visualize True --device cuda:0 --destination unet_standard
      ```
 
 ## Generating prepared dataset with multiple heat pumps:
@@ -54,7 +54,8 @@ The general workflow starts by training a model specialized for the single hp sc
 - the images of the dataset end up in `runs/2hpnn`, the resulting dataset in datasets_prepared_dir_2hp (paths.yaml)
 - execute
 ```
- python main.py --dataset_raw 5HP --architecture parallel --inputs gksit --model unet_para_f64_d5_k4_2500dp --visualize True --case prepare --destination 5hp_dataset --device cpu
+python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture 2stages --inputs gksit --model unet_stand_f64_d5_k4_2500dp --visualize True --case prepare --destination test_cuda --device cuda:0
+
 
 ```
 
@@ -64,7 +65,7 @@ The general workflow starts by training a model specialized for the single hp sc
 - if they are different adjust the hyperparameters in the code by hand 
 - execute
   ```
-  python main.py --dataset_raw 5HP --case iterative --model unet_para_f64_d5_k4_2500dp --architecture parallel --inputs gksit --destination seq_5hp_large
+python main.py --dataset_raw dataset_2hps_1fixed_1000dp --case iterative --model unet_stand_f64_d5_k4_2500dp --architecture 2stages  --inputs gksit --destination example_application
   ```
 
 ## Finding the results:
