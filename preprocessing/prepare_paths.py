@@ -94,7 +94,7 @@ def extend_paths_for_architecture(architecture:str, default_raw_dir: pathlib.Pat
         destination_dir = destination_dir / "allin1"
         datasets_prepared_dir = datasets_prepared_dir / "giant_manyhps"
     elif architecture in ["2stages","parallel","quad"]:
-        default_raw_dir = default_raw_dir / "1hp_boxes"
+        default_raw_dir = default_raw_dir
         destination_dir = destination_dir / "1hpnn"
         datasets_prepared_dir = datasets_prepared_dir / "1hp_boxes"
     else:
