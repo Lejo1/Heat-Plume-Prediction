@@ -25,6 +25,7 @@ def iterative_estimation(model: UNet, settings: SettingsTraining,paths: Paths2HP
     Takes the given model and uses it to iteratively estimate 
     the temperature field of the domain defined in the Settings file
     """
+
     time_start_prep_2hp = time.perf_counter()
 
     #prepare data and normalization
