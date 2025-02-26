@@ -71,9 +71,9 @@ python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture 2stages -
 - if they are different adjust the hyperparameters in the code by hand
 - the prepared dataset of the raw dataset is saved in datasets_prepared_dir (paths.yaml)
 - execute
-  ```
+```
 python main.py --dataset_raw dataset_2hps_1fixed_1000dp --case iterative --model unet_stand_f64_d5_k4_2500dp --architecture 2stages  --inputs gksit --destination example_application
-  ```
+```
 - the results are visualized in models_1hp_dir (paths.yaml) in the subfolder "/1hpnn"
 - the model for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
 - the raw data for this example run can be found at [2 Heatpump raw data](https://doi.org/10.18419/darus-3652)
