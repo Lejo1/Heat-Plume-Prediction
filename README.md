@@ -17,6 +17,7 @@
     models_1hp_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs
     models_2hp_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs/2hpnn
     datasets_prepared_dir_2hp: /home/pelzerja/pelzerja/test_nn/datasets_prepared/2HP_NN
+    prepared_1hp_best_models_and_data_dir: /home/pelzerja/pelzerja/test_nn/1HP_NN/runs/1hpnn
     ```
 
 ## Main.py
