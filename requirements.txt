@@ -4,12 +4,10 @@ tqdm
 matplotlib
 numpy
 scipy
-line_profiler_decorator
 pyyaml
 h5py
 tensorboard
 pytest
 pynvml
-ray
 ray[tune]
 torchsummary
