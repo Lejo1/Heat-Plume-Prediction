@@ -249,6 +249,7 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
     plt.savefig(f"{name_pic}.{settings_pic['format']}", **settings_pic)
     plt.clf()
     plt.cla()
+    plt.close()
 
 def plot_isolines(data: Dict[str, DataToVisualize], name_pic: str, settings_pic: dict):
     # plot isolines of temperature fields
