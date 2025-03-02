@@ -20,7 +20,7 @@ from data_stuff.utils import load_yaml
 
 class Domain:
     def __init__(
-        self, info_path: str, stitching_method: str = "max", file_name: str = "RUN_0.pt", device = "cpu", architecture: str = "2stages"):
+        self, info_path: str, stitching_method: str = "max", file_name: str = "RUN_0.pt", device = "cpu", architecture: str = "standard"):
         self.skip_datapoint = False
         self.info = load_yaml(info_path, "info")
         self.size: tuple[int, int] = [self.info["CellsNumber"][0], self.info["CellsNumber"][1], ]  # (x, y), cell-ids
@@ -33,7 +33,7 @@ class Domain:
         self.file_name: str = file_name
 
         
-        if architecture == "2stages": 
+        if architecture == "standard": 
             if (self.get_input_field_from_name("Permeability X [m^2]").max() > 1
                 or self.get_input_field_from_name("Permeability X [m^2]").min() < 0):
                 print(f"Permeability X [m^2] not in range (0,1) for {file_name} but at ({self.get_input_field_from_name('Permeability X [m^2]').max()}, {self.get_input_field_from_name('Permeability X [m^2]').min()})")

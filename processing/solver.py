@@ -101,7 +101,7 @@ class Solver(object):
                         #     writer.add_histogram(name, param, epoch)
 
             except KeyboardInterrupt:
-                if settings.architecture == "2stages":
+                if settings.architecture == "standard":
                     model_tmp = UNet(in_channels=len(settings.inputs), out_channels=1) # UNet
                 elif settings.architecture == "quad":
                     model_tmp = UNetQuad(in_channels=len(settings.inputs), out_channels=1)

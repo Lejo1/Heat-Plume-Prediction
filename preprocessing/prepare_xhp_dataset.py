@@ -32,7 +32,7 @@ def prepare_xhp_dataset(paths: Paths2HP, settings:SettingsTraining):
 
     ## load model
     time_start_prep_domain = time.perf_counter()
-    if settings.architecture == "2stages":
+    if settings.architecture == "standard":
         model_1HP = UNet(in_channels=len(settings.inputs)).float()
     elif settings.architecture == "quad":
         model_1HP = UNetQuad(in_channels=len(settings.inputs)).float()

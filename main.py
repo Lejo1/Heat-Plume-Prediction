@@ -34,7 +34,7 @@ def run(settings: SettingsTraining, paths: Paths2HP):
 
     input_channels, dataloaders = init_data(settings)
     # model
-    if settings.architecture == "2stages":
+    if settings.architecture == "standard":
         model = UNet(in_channels=input_channels).float()
     elif settings.architecture == "parallel":
         model = UNetParallel(in_channels=input_channels).float()
@@ -100,7 +100,7 @@ def run(settings: SettingsTraining, paths: Paths2HP):
 
 def save_inference(model_name:str, in_channels: int, settings: SettingsTraining):
     # push all datapoints through and save all outputs
-    if settings.architecture == "2stages":
+    if settings.architecture == "standard":
         model = UNet(in_channels=in_channels).float()
 
     model.load(model_name, map_location=settings.device)
@@ -137,7 +137,7 @@ if __name__ == "__main__":
     parser.add_argument("--visualize", type=bool, default=False, help="Flag for visualizing result")
     parser.add_argument("--only_prep", type=bool, default=False, help="Flag when only prepared dataset is available")
     parser.add_argument("--save_inference", type=bool, default=False, help="Flag for saving measurements")
-    parser.add_argument("--architecture", type=str, choices=["2stages","parallel","quad"], default="2stages", help="Architecture of model")
+    parser.add_argument("--architecture", type=str, choices=["standard","parallel","quad"], default="standard", help="Architecture of model")
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--len_box", type=int, default=256)
     parser.add_argument("--skip_per_dir", type=int, default=256)

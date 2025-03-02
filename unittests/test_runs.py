@@ -1,17 +1,17 @@
-from preprocessing.domain_classes.domain import Domain
 import pathlib
-from torch import tensor,where,stack,max
 from data_stuff.utils import SettingsTraining
 from preprocessing.prepare_paths import Paths2HP
-from preprocessing.prepare_xhp_dataset import prepare_xhp_dataset
 from postprocessing.iterative_estimation import iterative_estimation
 from networks.unet import UNet
 from main import run
 import unittest
+import shutil
+import os
 
 class testIterativeEstimation(unittest.TestCase):
 
     def test_iterative_estimation(self):
+        pathlib.Path("unittests/dummy_destination").mkdir(parents=True, exist_ok=True)
         settings = SettingsTraining(dataset_raw='', 
                                     inputs='gksit', 
                                     device='cuda:0', 
@@ -27,7 +27,7 @@ class testIterativeEstimation(unittest.TestCase):
                                     visualize=False, 
                                     only_prep=True, 
                                     save_inference=False, 
-                                    architecture='2stages', 
+                                    architecture='standard', 
                                     notes='', 
                                     skip_per_dir=256, 
                                     len_box=256)
@@ -44,9 +44,15 @@ class testIterativeEstimation(unittest.TestCase):
         except Exception:
             assert False, "iterative estimation did not succeed"
         self.assertTrue(True)
+        for root, dirs, files in os.walk('unittests/dummy_destination'):
+            for f in files:
+                os.unlink(os.path.join(root, f))
+            for d in dirs:
+                shutil.rmtree(os.path.join(root, d))
     
 class testRun(unittest.TestCase):
     def test_run(self):
+        pathlib.Path("unittests/dummy_destination").mkdir(parents=True, exist_ok=True)
         settings = SettingsTraining(dataset_raw='', 
                                     inputs='gksit', 
                                     device='cuda:0', 
@@ -62,7 +68,7 @@ class testRun(unittest.TestCase):
                                     visualize=False, 
                                     only_prep=True, 
                                     save_inference=False, 
-                                    architecture='2stages', 
+                                    architecture='standard', 
                                     notes='', 
                                     skip_per_dir=256, 
                                     len_box=256)
@@ -74,6 +80,12 @@ class testRun(unittest.TestCase):
                         )
         with self.assertRaises(FileNotFoundError):
             run(settings, paths)
+        for root, dirs, files in os.walk('unittests/dummy_destination'):
+            for f in files:
+                os.unlink(os.path.join(root, f))
+            for d in dirs:
+                shutil.rmtree(os.path.join(root, d))
 
 if __name__ == "__main__":
+    pathlib.Path("unittests/dummy_destination").mkdir(parents=True, exist_ok=True)
     unittest.main()

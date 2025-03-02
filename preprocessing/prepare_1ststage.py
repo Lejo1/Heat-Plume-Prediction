@@ -13,9 +13,9 @@ from data_stuff.transforms import (ComposeTransform, NormalizeTransform,
                              PowerOfTwoTransform, ReduceTo2DTransform, CutLengthTransform,
                              SignedDistanceTransform, PositionalEncodingTransform, ToTensorTransform)
 from data_stuff.utils import SettingsTraining
-from preprocessing.prepare_paths import Paths1HP, Paths2HP
+from preprocessing.prepare_paths import  Paths2HP
 
-def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, info_file: str = "info.yaml"):
+def prepare_dataset_for_1st_stage(paths: Paths2HP, settings: SettingsTraining, info_file: str = "info.yaml"):
     time_begin = time.perf_counter()
     info_file_path = settings.model / info_file
 
@@ -51,7 +51,7 @@ def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, i
                 "duration of whole process in seconds": time_end}, file)
         
 
-def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: bool = True, cutlengthtrafo: bool = False, box_length: int = 256, info:dict = None):
+def prepare_dataset(paths:  Paths2HP, inputs: str, power2trafo: bool = True, cutlengthtrafo: bool = False, box_length: int = 256, info:dict = None):
     """
     Create a dataset from the raw pflotran data in raw_data_path.
     The saved dataset is normalized using the mean and standard deviation, which are saved to info.yaml in the new dataset folder.

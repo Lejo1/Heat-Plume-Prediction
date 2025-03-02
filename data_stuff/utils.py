@@ -32,7 +32,7 @@ class SettingsTraining:
     visualize: bool = False
     only_prep: bool = False
     save_inference: bool = False
-    architecture: str = "2stages"
+    architecture: str = "standard"
     notes: str = ""
     skip_per_dir: int = 4
     len_box: int = 256
