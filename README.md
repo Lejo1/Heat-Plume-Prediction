@@ -45,12 +45,12 @@ The general workflow starts by training a model specialized for the single hp sc
      ```
      python main.py --dataset_prep 1HP --epoch 10 --architecture standard --inputs gksit --visualize True --device cuda:0 --destination unet_standard --only_prep True
      ```
-- the resulting model and visualizations (if enabled) can then be found in destination_dir (paths.yaml)
-- keep in mind that a prepared dataset will be generated in datasets_prepared_dir when using raw data (paths.yaml)
-- the prepared data for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
+- the resulting model and visualizations (if enabled via `--visualize True`) can then be found in destination_dir (paths.yaml)
+- keep in mind that a prepared dataset will be generated in datasets_prepared_dir when using raw data (paths.yaml), for this behaviour set `--only_prep False`
+- the prepared data for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518), to use an already prepared dataset set `--only_prep True`
 
 ## Generating prepared dataset with multiple heat pumps:
-- This allows for the generation of datasets where a single heat plume is predicted in the presence of other already existing heatplumes
+- This allows for the generation of datasets where a single heat plume is predicted in the presence of other already existing heatplumes. Hence cut outs around each heat pump are made from a dataset which includes more heat pumps. Therefore, the cut outs might include overlaps from heat plumes of other heat pumps.
 - you need the model in models_dir (paths.yaml) and the dataset in default_raw_dir (paths.yaml)
 - ensure that the hyperparameters from the model defined by --model are the same as in e.g. networks/unet.py (depending on the architecture)
 - if they are different adjust the hyperparameters in the code by hand
@@ -58,11 +58,12 @@ The general workflow starts by training a model specialized for the single hp sc
 ```
 python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture standard --inputs gksit --model unet_stand_f64_d5_k4_2500dp --visualize True --case prepare --destination test_prep
 ```
-- the resulting dataset can be found in generated_dataset_dir (paths.yaml)
+- the resulting dataset (cut outs around each heat pump) can be found in generated_dataset_dir (paths.yaml)
 - the new datapoints are also visualized in destination_dir (paths.yaml)
 - keep in mind that a prepared dataset will be generated in datasets_prepared_dir (paths.yaml)
 - the model for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
 - the raw data for this example run can be found at [2 Heatpump raw data](https://doi.org/10.18419/darus-3652)
+- hint: this step does not work on a GPU so the device is always switched to cpu
 
 ## Iterative application:
 - this allows for testing where heat plumes are predicted iteratively in a large domain
@@ -71,7 +72,7 @@ python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture standard 
 - if they are different adjust the hyperparameters in the code by hand
 - execute
 ```
-python main.py --dataset_raw dataset_2hps_1fixed_1000dp --case iterative --model unet_stand_f64_d5_k4_2500dp --architecture standard  --inputs gksit --destination example_application
+python main.py --dataset_raw dataset_2hps_1fixed_1000dp --case iterative --model unet_stand_f64_d5_k4_2500dp --architecture standard  --inputs gksit --destination example_application --epochs 10 --visualize True
 ```
 - the results are visualized in destination_dir (paths.yaml)
 - keep in mind that a prepared dataset will be generated in datasets_prepared_dir (paths.yaml)
