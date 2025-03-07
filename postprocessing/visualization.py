@@ -228,8 +228,8 @@ def infer_all_and_summed_pic(model: UNet | UNet3d, dataloader: DataLoader, devic
 
 def plot_avg_error_cellwise(dataloader, summed_error_pic, settings_pic: dict):
     # plot avg error cellwise 
-    # in case of 3D: plots xy and zy plane in height of hp, zy plane with averaged x_values
-    # optional: plot all zy planes
+    # in case of 3D: plots xy, zy and xz plane in height of hp, zy plane with averaged x_values
+    # optional: plots all zy planes, if the condition is set to True
 
     info = dataloader.dataset.dataset.info
 
@@ -237,28 +237,28 @@ def plot_avg_error_cellwise(dataloader, summed_error_pic, settings_pic: dict):
         extent_highs = (np.array(info["CellsSize"][:3]) * (dataloader.dataset[0][0][0].shape)[-3:])
         summed_error_pics={}
 
-        #for zy
+        #zy plane (in height of hp)
         x_position=get_hp_position(summed_error_pic)[0]
         summed_error_pic_zy=remove_first_dim(summed_error_pic, x_position)
         summed_error_pics["zy_slice"]=(summed_error_pic_zy, extent_highs[1:])
 
-        #mean in x-direction
+        #zy plane with averaged x_values
         summed_error_pic_mean_zy=torch.mean(summed_error_pic,0)
         summed_error_pics["zy_mean"]=(summed_error_pic_mean_zy, extent_highs[1:])
 
-        #get all slices in x-direction
+        #plots all zy planes, if set to True
         if False:
             for x_position in range(summed_error_pic.shape[0]):
                 summed_error_pic_yz=remove_first_dim(summed_error_pic, x_position)
                 summed_error_pics[f"zy_slice_{x_position}"]=summed_error_pic_yz, extent_highs[1:]
 
-        #transpose for xy
+        #transpose for xy plane (in height of hp)
         summed_error_pic=summed_error_pic.transpose(0,2)# (X,Y,Z) -> (Z,Y,X)   
         z_position=get_hp_position(summed_error_pic)[0]
         summed_error_pic_xy=remove_first_dim(summed_error_pic, z_position)
         summed_error_pics["xy_slice"]=(summed_error_pic_xy, extent_highs.T[1:])
 
-        #zx
+        #xz plane (in height of hp)
         y_position=get_hp_position(summed_error_pic)[1]
         summed_error_pic=summed_error_pic.transpose(0,1)# (Z,Y,X) -> (Y,Z,X)
         summed_error_pic_xz=remove_first_dim(summed_error_pic, y_position)
