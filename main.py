@@ -197,7 +197,6 @@ if __name__ == "__main__":
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--len_box", type=int, default=256)
     parser.add_argument("--skip_per_dir", type=int, default=256)
-    #parser.add_argument("--dimension", type=str, choices=["2d", "3d"], default="2d")
     args = parser.parse_args()
     settings = SettingsTraining(**vars(args))
 
