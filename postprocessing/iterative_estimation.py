@@ -28,7 +28,6 @@ def iterative_estimation(model: UNet, settings: SettingsTraining,paths: Paths2HP
 
     time_start_prep_2hp = time.perf_counter()
 
-    print(settings.visualize)
     #prepare data and normalization
     list_runs = os.listdir(settings.dataset_prep / "Inputs")
     settings_pic = {"format": "png",
@@ -174,7 +173,7 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
         if settings.visualize:
             dict_to_plot = {}
             name_pic = settings.destination / run_id / str(current)
-            data_path_temp = settings.destination/ "dataset" /str(current) 
+        data_path_temp = settings.destination/ "dataset" /str(current) 
 
         hp = single_hps[0]
         for tmp_hp in single_hps:
