@@ -80,8 +80,8 @@ def iterative_estimation(model: UNet, settings: SettingsTraining,paths: Paths2HP
         else:
             apply_iterative(model,settings,domain,run_id,info,settings_pic)
             
-
-    print(f"visualization saved in: {settings.destination}")
+    if settings.visualize:
+        print(f"visualization saved in: {settings.destination}")
     time_end = time.perf_counter()
 
 # batch application, deprecated
@@ -222,8 +222,8 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
         domain.inputs[4] = domain.prediction.clone().detach()
         single_hps = domain.extract_hp_boxes("cpu")
 
-    domain.plot("t",settings.destination / run_id ,f"domain_step_final")
-    
-    plot_datafields(stepswise_to_plot, settings.destination / run_id / "stepwise", settings_pic)
+    if settings.visualize:
+        domain.plot("t",settings.destination / run_id ,f"domain_step_final")
+        plot_datafields(stepswise_to_plot, settings.destination / run_id / "stepwise", settings_pic)
     with open(settings.destination / run_id / "measurements.yaml", "w") as f:
         f.write(f"avg inference times for 1HP-NN in seconds step: {avg_time_inference_all/len(single_hps)}\n")
