@@ -50,7 +50,7 @@ The general workflow starts by training a model specialized for the single hp sc
 
 ## Generating prepared dataset with multiple heat pumps:
 - This allows for the generation of datasets where a single heat plume is predicted in the presence of other already existing heatplumes. Hence cut outs around each heat pump are made from a dataset which includes more heat pumps. Therefore, the cut outs might include overlaps from heat plumes of other heat pumps.
-- you need the model in destination_dir (paths.yaml) and the dataset in default_raw_dir (paths.yaml)
+- you need the model in destination_dir (paths.yaml) and the domain dataset in default_raw_dir (paths.yaml)
 - ensure that the hyperparameters from the model defined by --model are the same as in e.g. networks/unet.py (depending on the architecture)
 - if they are different adjust the hyperparameters in the code by hand
 - execute
@@ -59,7 +59,7 @@ python main.py --dataset_raw dataset_2hps_1fixed_1000dp --architecture standard 
 ```
 - the resulting dataset (cut outs around each heat pump) can be found in generated_dataset_dir (paths.yaml)
 - the new datapoints are also visualized in destination_dir (paths.yaml)
-- keep in mind that a prepared dataset will be generated in datasets_prepared_dir (paths.yaml)
+- keep in mind that a prepared dataset of the whole domain will be saved in datasets_prepared_dir (paths.yaml)
 - the model for this example run can be found at [Models and prepared data](https://doi.org/10.18419/darus-4518)
 - the raw data for this example run can be found at [2 Heatpump raw data](https://doi.org/10.18419/darus-3652)
 - hint: this step does not work on a GPU so the device is always switched to cpu
