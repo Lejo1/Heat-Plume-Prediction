@@ -143,6 +143,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_per_dir", type=int, default=256)
     args = parser.parse_args()
     settings = SettingsTraining(**vars(args))
+    print(settings)
 
     if settings.model == "default" and settings.case in ["test", "finetune", "visualize", "iterative"]:
         print(f"for case {settings.case} a model is required!")
