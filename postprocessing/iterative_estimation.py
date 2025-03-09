@@ -55,23 +55,24 @@ def iterative_estimation(model: UNet, settings: SettingsTraining,paths: Paths2HP
             logging.warning(f"Skipping {run_id}")
             continue
         
-        # plot inital domain
-        dict_to_plot = {}
         norm = NormalizeTransform(info)
-        extent_highs = (np.array(info["CellsSize"][:2]) * domain.inputs.shape[-2:])
-        inputs = domain.inputs.clone().detach()
-        inputs = norm.reverse(inputs.cpu(), "Inputs")
-        inputKeys = info["Inputs"].keys()
-        for input in inputKeys:
-            index = info["Inputs"][input]["index"]
-            if input == "Temperature prediction (other HPs) [C]":
-                dict_to_plot[f"domain_{input}_{run_id}"] = DataToVisualize(inputs[index], f"Temperature in [C]", extent_highs)
-            elif input == "SDF":
-                continue
-            else:
-                dict_to_plot[f"domain_{input}_{run_id}"] = DataToVisualize(inputs[index], f"{input}", extent_highs)
-        name_pic = settings.destination / run_id / "domain_inputs"
-        plot_datafields(dict_to_plot, name_pic, settings_pic)
+        if settings.visualize:
+            # plot inital domain
+            dict_to_plot = {}
+            extent_highs = (np.array(info["CellsSize"][:2]) * domain.inputs.shape[-2:])
+            inputs = domain.inputs.clone().detach()
+            inputs = norm.reverse(inputs.cpu(), "Inputs")
+            inputKeys = info["Inputs"].keys()
+            for input in inputKeys:
+                index = info["Inputs"][input]["index"]
+                if input == "Temperature prediction (other HPs) [C]":
+                    dict_to_plot[f"domain_{input}_{run_id}"] = DataToVisualize(inputs[index], f"Temperature in [C]", extent_highs)
+                elif input == "SDF":
+                    continue
+                else:
+                    dict_to_plot[f"domain_{input}_{run_id}"] = DataToVisualize(inputs[index], f"{input}", extent_highs)
+            name_pic = settings.destination / run_id / "domain_inputs"
+            plot_datafields(dict_to_plot, name_pic, settings_pic)
 
         # apply iterative or batch
         if batch:
@@ -153,7 +154,8 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
     single_hps = domain.extract_hp_boxes("cpu")
     avg_time_inference_all = 0
     #plot inital domain
-    domain.plot("t",settings.destination / run_id ,"domain_step_init")
+    if settings.visualize:
+        domain.plot("t",settings.destination / run_id ,"domain_step_init")
     hp_pos = []
     for hp in single_hps:
         hp_pos.append(hp.pos)
@@ -163,13 +165,15 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
 
     extent_highs_domain = (np.array(info["CellsSize"][:2]) * domain.label.shape[-2:])
 
-    stepswise_to_plot["step init"] = DataToVisualize(domain.prediction.clone().detach(), "Inital Domain",extent_highs_domain)
+    if settings.visualize:
+        stepswise_to_plot["step init"] = DataToVisualize(domain.prediction.clone().detach(), "Inital Domain",extent_highs_domain)
 
     for current, pos in enumerate(hp_pos_sorted):
         # visualization purpose
-        dict_to_plot = {}
-        name_pic = settings.destination / run_id / str(current)
-        data_path_temp = settings.destination/ "dataset" /str(current) 
+        if settings.visualize:
+            dict_to_plot = {}
+            name_pic = settings.destination / run_id / str(current)
+            data_path_temp = settings.destination/ "dataset" /str(current) 
 
         hp = single_hps[0]
         for tmp_hp in single_hps:
@@ -183,24 +187,25 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
         time_inference = time.perf_counter() - time_start_run_1hp
         avg_time_inference_all += time_inference
 
-        #plot inputs
-        extent_highs = (np.array(info["CellsSize"][:2]) * single_hps[current].inputs.shape[-2:])
-        inputs = single_hps[current].inputs.clone().detach()
-        inputs = norm.reverse(inputs.cpu(), "Inputs")
-        inputKeys = info["Inputs"].keys()
-        for input in inputKeys:
-            index = info["Inputs"][input]["index"]
-            dict_to_plot[f"{input}_{current}"] = DataToVisualize(inputs[index], f"step {current} : {input}", extent_highs)
+        if settings.visualize:
+            #plot inputs
+            extent_highs = (np.array(info["CellsSize"][:2]) * single_hps[current].inputs.shape[-2:])
+            inputs = single_hps[current].inputs.clone().detach()
+            inputs = norm.reverse(inputs.cpu(), "Inputs")
+            inputKeys = info["Inputs"].keys()
+            for input in inputKeys:
+                index = info["Inputs"][input]["index"]
+                dict_to_plot[f"{input}_{current}"] = DataToVisualize(inputs[index], f"step {current} : {input}", extent_highs)
 
-        #plot output
-        output = single_hps[current].primary_temp_field.clone().detach()
-        y = domain.reverse_norm( output.squeeze(), property="Temperature [C]")
-        dict_to_plot[f"t_out_{current}"] = DataToVisualize(y, f"Prediction hp{current}: Temperature in [°C]", extent_highs)
-        label = single_hps[current].label.clone().detach().squeeze()
-        dict_to_plot[f"label_{current}"] = DataToVisualize(label, f"Label: Temperature in [°C]", extent_highs)
+            #plot output
+            output = single_hps[current].primary_temp_field.clone().detach()
+            y = domain.reverse_norm( output.squeeze(), property="Temperature [C]")
+            dict_to_plot[f"t_out_{current}"] = DataToVisualize(y, f"Prediction hp{current}: Temperature in [°C]", extent_highs)
+            label = single_hps[current].label.clone().detach().squeeze()
+            dict_to_plot[f"label_{current}"] = DataToVisualize(label, f"Label: Temperature in [°C]", extent_highs)
 
-        # plot 
-        plot_datafields(dict_to_plot, name_pic, settings_pic)
+            # plot 
+            plot_datafields(dict_to_plot, name_pic, settings_pic)
 
         current_pred = single_hps[current].primary_temp_field.clone().detach()
         inputs = stack([hp.inputs[0],hp.inputs[1],hp.inputs[2],hp.inputs[3], current_pred])
@@ -208,10 +213,12 @@ def apply_iterative(model: UNet, settings: SettingsTraining, domain, run_id, inf
             hp.save(run_id=run_id, dir=data_path_temp, inputs_all=inputs,)
 
         #update domain
-        domain.plot("t",settings.destination / run_id ,f"domain_step_pre_{current}",corner_ll=single_hps[current].corner_ll,corner_ur=single_hps[current].corner_ur)
+        if settings.visualize:
+            domain.plot("t",settings.destination / run_id ,f"domain_step_pre_{current}",corner_ll=single_hps[current].corner_ll,corner_ur=single_hps[current].corner_ur)
         domain.add_hp(single_hps[current])
-        stepswise_to_plot[f"step {current+1}"] = DataToVisualize(domain.prediction.clone().detach(), f"Prediction after step {current+1} in [°C]",extent_highs_domain)
-        domain.plot("t",settings.destination / run_id ,f"Iteration {current + 1}: Prediction in [C°]",corner_ll=single_hps[current].corner_ll,corner_ur=single_hps[current].corner_ur)
+        if settings.visualize:
+            stepswise_to_plot[f"step {current+1}"] = DataToVisualize(domain.prediction.clone().detach(), f"Prediction after step {current+1} in [°C]",extent_highs_domain)
+            domain.plot("t",settings.destination / run_id ,f"Iteration {current + 1}: Prediction in [C°]",corner_ll=single_hps[current].corner_ll,corner_ur=single_hps[current].corner_ur)
         domain.inputs[4] = domain.prediction.clone().detach()
         single_hps = domain.extract_hp_boxes("cpu")
 

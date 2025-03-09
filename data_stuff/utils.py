@@ -30,7 +30,7 @@ class SettingsTraining:
     case_2hp: bool = False
     prepare_xhp: bool = False
     visualize: bool = False
-    only_prep: bool = False
+    already_prep: bool = False
     save_inference: bool = False
     architecture: str = "standard"
     notes: str = ""

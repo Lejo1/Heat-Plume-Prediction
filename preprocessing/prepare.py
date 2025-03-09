@@ -11,7 +11,7 @@ def prepare_data_and_paths(settings:SettingsTraining):
     set up paths to those prepared datasets for future usage
     """
     paths: Paths2HP
-    paths, settings.inputs, destination_dir = set_paths_2hpnn(settings.dataset_raw, settings.inputs,model_name=settings.model, dataset_prep = settings.dataset_prep,)
+    paths, settings.inputs, destination_dir = set_paths_2hpnn(settings.dataset_raw, settings.inputs,model_name=settings.model, dataset_prep = settings.dataset_prep, already_prep = settings.already_prep,)
     settings.dataset_prep = paths.datasets_boxes_prep_path
     settings.dataset_prep = paths.dataset_1st_prep_path
 
@@ -30,7 +30,7 @@ def prepare_data_and_paths(settings:SettingsTraining):
         # prepare dataset if not done yet OR if test=case do it anyways because of potentially different std,mean,... values than trained with
         # if test, always want to prepare because the normalization parameters have to match
         #some datasets may only be available in prepared form, eg those created through prepare xhp, so there is no raw dataset to be prepared
-        if not settings.only_prep:
+        if not settings.already_prep:
             prepare_dataset_for_1st_stage(paths, settings)
         print(f"Dataset prepared ({paths.dataset_1st_prep_path})")
 
