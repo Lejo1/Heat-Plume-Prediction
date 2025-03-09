@@ -28,6 +28,7 @@ def iterative_estimation(model: UNet, settings: SettingsTraining,paths: Paths2HP
 
     time_start_prep_2hp = time.perf_counter()
 
+    print(settings.visualize)
     #prepare data and normalization
     list_runs = os.listdir(settings.dataset_prep / "Inputs")
     settings_pic = {"format": "png",
