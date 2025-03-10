@@ -3,10 +3,7 @@ import pathlib
 
 import torch
 import yaml
-from torch import default_generator, randperm, Generator
-from torch.utils.data import Dataset, Subset
-from torch._utils import _accumulate
-from typing import List,Optional,Sequence
+from torch.utils.data import Dataset
 
 from data_stuff.transforms import NormalizeTransform
 
@@ -25,7 +22,6 @@ class SimulationDataset(Dataset):
         self.label_names.sort()
         self.info = self.__load_info()
         self.norm = NormalizeTransform(self.info)
-
         if len(self.input_names) != len(self.label_names):
             raise ValueError(
                 "Number of Inputs and labels does not match!")
@@ -51,7 +47,7 @@ class SimulationDataset(Dataset):
             "Inputs", self.input_names[index]))
         label = torch.load(self.path.joinpath(
             "Labels", self.label_names[index]))
-        return input, label
+        return input, label, self.input_names[index]
     
     def get_run_id(self, index):
         return self.input_names[index]

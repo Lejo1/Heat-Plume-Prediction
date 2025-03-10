@@ -4,47 +4,29 @@ import multiprocessing
 import numpy as np
 import time
 import torch
-import yaml
-from torch.utils.data import DataLoader, random_split
 from torch.nn import MSELoss
 
-from data_stuff.dataset import SimulationDataset, DatasetExtend1, DatasetExtend2, get_splits
 from data_stuff.utils import SettingsTraining
-from networks.unet import UNet, UNetBC
-from networks.unetHalfPad import UNetHalfPad
+from data_stuff.init_data import init_data
+from networks.unet import UNet
+from networks.unetQuad import UNetQuad
+from networks.unetParallel import UNetParallel
 from processing.solver import Solver
+from processing.hypertune import tune_nn
 from preprocessing.prepare import prepare_data_and_paths
-from postprocessing.visualization import plot_avg_error_cellwise, visualizations, infer_all_and_summed_pic
+from postprocessing.visualization import plot_avg_error_cellwise, visualizations, infer_all_and_summed_pic, visualize_dataset
 from postprocessing.measurements import measure_loss, save_all_measurements
+from postprocessing.iterative_estimation import iterative_estimation
+from torchsummary import summary
+from preprocessing.prepare_paths import Paths2HP
 
-def init_data(settings: SettingsTraining, seed=1):
-    if settings.problem == "2stages":
-        dataset = SimulationDataset(settings.dataset_prep)
-    elif settings.problem == "extend1":
-        dataset = DatasetExtend1(settings.dataset_prep, box_size=settings.len_box)
-    elif settings.problem == "extend2":
-        dataset = DatasetExtend2(settings.dataset_prep, box_size=settings.len_box, skip_per_dir=settings.skip_per_dir)
-        settings.inputs += "T"
-    print(f"Length of dataset: {len(dataset)}")
-    generator = torch.Generator().manual_seed(seed)
-
-    split_ratios = [0.7, 0.2, 0.1]
-    # if settings.case == "test":
-    #     split_ratios = [0.0, 0.0, 1.0] 
-
-    datasets = random_split(dataset, get_splits(len(dataset), split_ratios), generator=generator)
-    dataloaders = {}
-    try:
-        dataloaders["train"] = DataLoader(datasets[0], batch_size=50, shuffle=True, num_workers=0)
-        dataloaders["val"] = DataLoader(datasets[1], batch_size=50, shuffle=True, num_workers=0)
-    except: pass
-    dataloaders["test"] = DataLoader(datasets[2], batch_size=50, shuffle=True, num_workers=0)
-
-    return dataset.input_channels, dataloaders
-
-
-def run(settings: SettingsTraining):
+def run(settings: SettingsTraining, paths: Paths2HP):
     multiprocessing.set_start_method("spawn", force=True)
+
+    #hyperparamter tuning, no training and visualization
+    if settings.case in ["hypertune"]:
+        tune_nn(settings)
+        return
     
     times = {}
     times["time_begin"] = time.perf_counter()
@@ -52,14 +34,28 @@ def run(settings: SettingsTraining):
 
     input_channels, dataloaders = init_data(settings)
     # model
-    if settings.problem == "2stages":
+    if settings.architecture == "standard":
         model = UNet(in_channels=input_channels).float()
-    elif settings.problem in ["extend1", "extend2"]:
-        model = UNetHalfPad(in_channels=input_channels).float()
-    if settings.case in ["test", "finetune"]:
-        model.load(settings.model, settings.device)
-    model.to(settings.device)
+    elif settings.architecture == "parallel":
+        model = UNetParallel(in_channels=input_channels).float()
+    elif settings.architecture == "quad":
+        model = UNetQuad(in_channels=input_channels).float()
 
+    if settings.case in ["test", "finetune","iterative"]:
+        model.load(settings.model, map_location=settings.device)
+    
+    #only visualization for evaluation, skip other stuff
+    if settings.case == "visualize":
+        visualize_dataset(dataloaders["test"], settings.device, plot_path=settings.destination / f"plot_vis", amount_datapoints_to_visu=20, pic_format="png")
+        return
+
+    #use model for iterative estimation of whole domain 
+    if settings.case == "iterative":
+        model.to("cpu")
+        model = iterative_estimation(model,settings, paths)
+        return model
+    
+    model.to(settings.device)
     solver = None
     if settings.case in ["train", "finetune"]:
         loss_fn = MSELoss()
@@ -67,7 +63,7 @@ def run(settings: SettingsTraining):
         finetune = True if settings.case == "finetune" else False
         solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss_fn, finetune=finetune)
         try:
-            solver.load_lr_schedule(settings.destination / "learning_rate_history.csv", settings.case_2hp)
+            solver.load_lr_schedule(settings.destination / "learning_rate_history.csv", False)
             times["time_initializations"] = time.perf_counter()
             solver.train(settings)
             times["time_training"] = time.perf_counter()
@@ -80,33 +76,34 @@ def run(settings: SettingsTraining):
 
     # save model
     model.save(settings.destination)
+    summary(model,input_size=(5,64,256))
 
     # visualization
     which_dataset = "val"
     pic_format = "png"
     times["time_end"] = time.perf_counter()
+    errors = {}
     if settings.case == "test":
         settings.visualize = True
         which_dataset = "test"
+        errors = measure_loss(model, dataloaders, settings.device, vT_case="temperature")
         # errors = measure_loss(model, dataloaders[which_dataset], settings.device)
-    save_all_measurements(settings, len(dataloaders[which_dataset].dataset), times, solver) #, errors)
     if settings.visualize:
-        visualizations(model, dataloaders[which_dataset], settings.device, plot_path=settings.destination / f"plot_{which_dataset}", amount_datapoints_to_visu=5, pic_format=pic_format)
+        errors["isolines"] = visualizations(model, dataloaders[which_dataset], settings.device, plot_path=settings.destination / f"plot_{which_dataset}", amount_datapoints_to_visu=10, pic_format=pic_format)
         times[f"avg_inference_time of {which_dataset}"], summed_error_pic = infer_all_and_summed_pic(model, dataloaders[which_dataset], settings.device)
         plot_avg_error_cellwise(dataloaders[which_dataset], summed_error_pic, {"folder" : settings.destination, "format": pic_format})
         print("Visualizations finished")
-        
+    save_all_measurements(settings, len(dataloaders[which_dataset].dataset), times, solver, errors)       
     print(f"Whole process took {(times['time_end']-times['time_begin'])//60} minutes {np.round((times['time_end']-times['time_begin'])%60, 1)} seconds\nOutput in {settings.destination.parent.name}/{settings.destination.name}")
 
     return model
 
 def save_inference(model_name:str, in_channels: int, settings: SettingsTraining):
     # push all datapoints through and save all outputs
-    if settings.problem == "2stages":
+    if settings.architecture == "standard":
         model = UNet(in_channels=in_channels).float()
-    elif settings.problem in ["extend1", "extend2"]:
-        model = UNetHalfPad(in_channels=in_channels).float()
-    model.load(model_name, settings.device)
+
+    model.load(model_name, map_location=settings.device)
     model.eval()
 
     data_dir = settings.dataset_prep
@@ -129,27 +126,29 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)
         
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_raw", type=str, default="dataset_2d_small_1000dp", help="Name of the raw dataset (without inputs)")
-    parser.add_argument("--dataset_prep", type=str, default="")
-    parser.add_argument("--device", type=str, default="cuda:0")
-    parser.add_argument("--epochs", type=int, default=10000)
-    parser.add_argument("--case", type=str, choices=["train", "test", "finetune"], default="train")
-    parser.add_argument("--model", type=str, default="default") # required for testing or finetuning
-    parser.add_argument("--destination", type=str, default="")
-    parser.add_argument("--inputs", type=str, default="gksi") #choices=["gki", "gksi", "pksi", "gks", "gksi100", "ogksi1000", "gksi1000", "pksi100", "pksi1000", "ogksi1000_finetune", "gki100", "t", "gkiab", "gksiab", "gkt"]
-    parser.add_argument("--case_2hp", type=bool, default=False)
-    parser.add_argument("--visualize", type=bool, default=False)
-    parser.add_argument("--save_inference", type=bool, default=False)
-    parser.add_argument("--problem", type=str, choices=["2stages", "allin1", "extend1", "extend2",], default="extend1")
+    parser.add_argument("--dataset_raw", type=str, default="dataset_2hps_1fixed_1000dp", help="Name of the raw dataset (without inputs)")
+    parser.add_argument("--dataset_prep", type=str, default="", help="Name of the prepared dataset")
+    parser.add_argument("--device", type=str, default="cuda:0", help="device for torch (cpu, gpu)")
+    parser.add_argument("--epochs", type=int, default=10000, help="For how many epochs the network should be trained")
+    parser.add_argument("--case", type=str, choices=["train", "test", "finetune", "hypertune", "visualize", "iterative", "prepare"], default="train", help="case of the current execution, eg train, test, hyperparameter tuning (hypertune)...")
+    parser.add_argument("--model", type=str, default="default", help="Name of the model")
+    parser.add_argument("--destination", type=str, default="default_dest", help="destination folder name")
+    parser.add_argument("--inputs", type=str, default="gksit", help="input parameters")
+    parser.add_argument("--visualize", type=bool, default=False, help="Flag for visualizing result")
+    parser.add_argument("--already_prep", type=bool, default=False, help="Flag when only prepared dataset is available")
+    parser.add_argument("--save_inference", type=bool, default=False, help="Flag for saving measurements")
+    parser.add_argument("--architecture", type=str, choices=["standard","parallel","quad"], default="standard", help="Architecture of model")
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--len_box", type=int, default=256)
     parser.add_argument("--skip_per_dir", type=int, default=256)
     args = parser.parse_args()
     settings = SettingsTraining(**vars(args))
 
-    settings = prepare_data_and_paths(settings)
-
-    model = run(settings)
-
-    if args.save_inference:
-        save_inference(settings.model, len(args.inputs), settings)
+    if settings.model == "default" and settings.case in ["test", "finetune", "visualize", "iterative"]:
+        print(f"for case {settings.case} a model is required!")
+    else:
+        settings, paths = prepare_data_and_paths(settings)
+        if not settings.case == "prepare":
+            model = run(settings, paths)
+            if args.save_inference:
+                save_inference(settings.model, len(args.inputs), settings)

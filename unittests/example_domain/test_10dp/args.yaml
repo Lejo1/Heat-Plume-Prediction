@@ -1,0 +1,8 @@
+dataset: dataset_2hps_1fixed_10dp
+inputs:
+- Pressure Gradient [-]
+- Permeability X [m^2]
+- SDF
+- Material ID
+- Temperature [C]
+Duration for preparation in sec: 11.835076229646802

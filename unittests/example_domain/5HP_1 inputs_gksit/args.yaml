@@ -1,0 +1,8 @@
+dataset: 5HP_1
+inputs:
+- Pressure Gradient [-]
+- Permeability X [m^2]
+- SDF
+- Material ID
+- Temperature [C]
+Duration for preparation in sec: 2.445009441988077

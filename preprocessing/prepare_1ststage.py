@@ -1,5 +1,3 @@
-import argparse
-import logging
 import os
 import pathlib
 import time
@@ -15,28 +13,33 @@ from data_stuff.transforms import (ComposeTransform, NormalizeTransform,
                              PowerOfTwoTransform, ReduceTo2DTransform, CutLengthTransform,
                              SignedDistanceTransform, PositionalEncodingTransform, ToTensorTransform)
 from data_stuff.utils import SettingsTraining
-from preprocessing.prepare_paths import Paths1HP, Paths2HP
+from preprocessing.prepare_paths import  Paths2HP
 
-def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, info_file: str = "info.yaml"):
+def prepare_dataset_for_1st_stage(paths: Paths2HP, settings: SettingsTraining, info_file: str = "info.yaml"):
     time_begin = time.perf_counter()
     info_file_path = settings.model / info_file
 
-    if settings.problem == "extend1":
+    if settings.architecture == "extend1":
         cutlengthtrafo=True
     else:
         cutlengthtrafo=False
 
-    if settings.case == "test" or settings.case_2hp:
+    power2trafo=True
+    #if iterative application of model to large domain then the domain should not be cut to powers of 2
+    if settings.case == "iterative":
+        power2trafo=False
         # get info of training
         with open(info_file_path, "r") as file:
             info = yaml.safe_load(file)
+
     else:
         info = None
-            
-    # TODO unsauber, TODO cutlengthtrafo zu länge die in info.yaml gespeichert ist
-    prepare_dataset(paths, settings.inputs, power2trafo=True, cutlengthtrafo=cutlengthtrafo, box_length=settings.len_box,info=info)
     
-    if settings.case == "train" and not settings.case_2hp:
+
+    # TODO unsauber, TODO cutlengthtrafo zu länge die in info.yaml gespeichert ist
+    prepare_dataset(paths, settings.inputs, power2trafo=power2trafo, cutlengthtrafo=cutlengthtrafo, box_length=settings.len_box,info=info)
+    
+    if settings.case == "train":
         # store info of training
         with open(settings.destination / info_file, "w") as file:
             yaml.safe_dump(info, file)
@@ -48,7 +51,7 @@ def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, i
                 "duration of whole process in seconds": time_end}, file)
         
 
-def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: bool = True, cutlengthtrafo: bool = False, box_length: int = 256, info:dict = None):
+def prepare_dataset(paths:  Paths2HP, inputs: str, power2trafo: bool = True, cutlengthtrafo: bool = False, box_length: int = 256, info:dict = None):
     """
     Create a dataset from the raw pflotran data in raw_data_path.
     The saved dataset is normalized using the mean and standard deviation, which are saved to info.yaml in the new dataset folder.
@@ -81,7 +84,6 @@ def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: 
     dims = np.array(pflotran_settings["grid"]["ncells"])
     total_size = np.array(pflotran_settings["grid"]["size"])
     cell_size = total_size/dims
-
     if info is None: calc = WelfordStatistics()
     tensor_transform = ToTensorTransform()
     output_variables = ["Temperature [C]"]
@@ -100,7 +102,7 @@ def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: 
         torch.save(x, os.path.join(dataset_prepared_path, "Inputs", f"{run}.pt"))
         torch.save(y, os.path.join(dataset_prepared_path, "Labels", f"{run}.pt"))
         
-    if info is not None: 
+    if info is not None:
         info["CellsNumberPrior"] = info["CellsNumber"]
         info["PositionHPPrior"] = info["PositionLastHP"]
         assert info["CellsSize"][:2] == cell_size.tolist()[:2], f"Cell size changed between given info.yaml {info['CellsSize']} and data {cell_size.tolist()}"
@@ -264,7 +266,7 @@ def load_data(data_path: str, time: str, variables: dict, dimensions_of_datapoin
     return data
 
 def get_hp_location(data):
-    try:  # TODO problematic with SDF?
+    try: 
         ids = data["Material ID"]
     except:
         try:

@@ -1,0 +1,382 @@
+import logging
+import os
+import pathlib
+import shutil
+from math import cos, sin
+from tqdm.auto import tqdm
+import matplotlib.patches as patches
+
+import matplotlib.pyplot as plt
+from torch import long as torch_long
+from torch import max, ones, save, squeeze, stack, tensor, where, cat, load, zeros, min
+import torch
+
+from postprocessing.visualization import _aligned_colorbar
+from preprocessing.domain_classes.heat_pump import HeatPumpBox
+from preprocessing.domain_classes.stitching import Stitching
+from preprocessing.prepare_1ststage import expand_property_names
+from data_stuff.utils import load_yaml
+
+
+class Domain:
+    def __init__(
+        self, info_path: str, stitching_method: str = "max", file_name: str = "RUN_0.pt", device = "cpu", architecture: str = "standard"):
+        self.skip_datapoint = False
+        self.info = load_yaml(info_path, "info")
+        self.size: tuple[int, int] = [self.info["CellsNumber"][0], self.info["CellsNumber"][1], ]  # (x, y), cell-ids
+        self.background_temperature: float = 10.6 #TODO hardcoded
+        self.inputs: tensor = self.load_datapoint(info_path, case="Inputs", file_name=file_name)
+        self.label: tensor = self.load_datapoint(info_path, case="Labels", file_name=file_name)
+        self.prediction: tensor = self.inputs[4].clone().detach() #TODO hardcoded
+        self.stitching: Stitching = Stitching(stitching_method, self.background_temperature)
+        self.label_normed_bool: bool = True
+        self.file_name: str = file_name
+
+        
+        if architecture == "standard": 
+            if (self.get_input_field_from_name("Permeability X [m^2]").max() > 1
+                or self.get_input_field_from_name("Permeability X [m^2]").min() < 0):
+                print(f"Permeability X [m^2] not in range (0,1) for {file_name} but at ({self.get_input_field_from_name('Permeability X [m^2]').max()}, {self.get_input_field_from_name('Permeability X [m^2]').min()})")
+                origin_2hp_prep = info_path
+                pathlib.Path(origin_2hp_prep, "unusable/Inputs").mkdir(parents=True, exist_ok=True)
+                pathlib.Path(origin_2hp_prep, "unusable/Labels").mkdir(parents=True, exist_ok=True)
+                shutil.move(
+                    pathlib.Path(origin_2hp_prep, "Inputs", file_name),
+                    pathlib.Path(origin_2hp_prep, "unusable", "Inputs", f"{file_name.split('.')[0]}_k_outside_0_1.pt",),)
+                shutil.move(
+                    pathlib.Path(origin_2hp_prep, "Labels", file_name),
+                    pathlib.Path(origin_2hp_prep, "unusable", "Labels", file_name),)
+                self.skip_datapoint=True
+            # assert (
+            #     self.get_input_field_from_name("Permeability X [m^2]").max() <= 1
+            # ), f"Max of permeability X [m^2] not < 1 but {self.get_input_field_from_name('Permeability X [m^2]').max()} for {file_name}"
+            # assert (
+            #     self.get_input_field_from_name("Permeability X [m^2]").min() >= 0
+            # ), f"Min of permeability X [m^2] not > 0 but {self.get_input_field_from_name('Permeability X [m^2]').min()} for {file_name}"
+            # TODO : wenn perm/pressure nicht mehr konstant sind, muss dies zu den HP-Boxen verschoben werden
+            else:
+                try:
+                    p_related_name = "Pressure Gradient [-]"
+                    p_related_field = self.get_input_field_from_name(p_related_name)
+                except:
+                    p_related_name = "Liquid Pressure [Pa]"
+                    p_related_field = self.get_input_field_from_name(p_related_name)
+                logging.info(
+                    f"{p_related_name} in range ({p_related_field.max()}, {p_related_field.min()})")
+
+                if p_related_field.max() > 1 or p_related_field.min() < 0:
+                    print(f"{p_related_name} not in range (0,1) for {file_name} but at ({p_related_field.max()}, {p_related_field.min()})")
+                    origin_2hp_prep = info_path
+                    pathlib.Path(origin_2hp_prep, "unusable/Inputs").mkdir(parents=True, exist_ok=True)
+                    pathlib.Path(origin_2hp_prep, "unusable/Labels").mkdir(parents=True, exist_ok=True)
+
+                    shutil.move(
+                        pathlib.Path(origin_2hp_prep, "Inputs", file_name),
+                        pathlib.Path(origin_2hp_prep, "unusable", "Inputs", f"{file_name.split('.')[0]}_p_outside_0_1.pt",),)
+                    shutil.move(
+                        pathlib.Path(origin_2hp_prep, "Labels", file_name),
+                        pathlib.Path(origin_2hp_prep, "unusable", "Labels", file_name),)
+                    self.skip_datapoint=True
+                # assert (
+                #     p_related_field.max() <= 1 and p_related_field.min() >= 0
+                # ), f"{p_related_name} not in range (0,1) but {p_related_field.max(), p_related_field.min()}"
+
+    def save(self, folder: pathlib.Path = "", name: str = "test"):
+        save(self.prediction, folder / f"domain_prediction_{name}.pt")
+        save(self.label, folder / f"domain_label_{name}.pt")
+        save(self.inputs, folder / f"domain_inputs_{name}.pt")
+
+    def load_datapoint(
+        self, dataset_domain_path: str, case: str = "Inputs", file_name="RUN_0.pt"
+    ):
+        # load dataset of large domain
+        file_path = os.path.join(dataset_domain_path, case, file_name)
+        data = load(file_path)
+        return data
+
+    def get_index_from_name(self, name: str):
+        return self.info["Inputs"][name]["index"]
+
+    def get_name_from_index(self, index: int):
+        for property, values in self.info["Inputs"].items():
+            if values["index"] == index:
+                return property
+
+    def get_input_field_from_name(self, name: str):
+        field_idx = self.get_index_from_name(name)
+        field = self.inputs[field_idx, :, :]
+        return field
+
+    def norm(self, data: tensor, property: str = "Temperature [C]"):
+        norm_fct, max_val, min_val, mean_val, std_val = self.get_norm_info(property)
+
+        if norm_fct == "Rescale":
+            out_min, out_max = (0, 1)  # TODO Achtung! Hardcoded, values same as in transforms.NormalizeTransform.out_min/max
+            delta = max_val - min_val
+            data = (data - min_val) / delta * (out_max - out_min) + out_min
+        elif norm_fct == "Standardize":
+            data = (data - mean_val) / std_val
+        elif norm_fct is None:
+            pass
+        else:
+            raise ValueError(f"Normalization type '{self.norm['Norm']}' not recognized")
+        return data
+
+    def reverse_norm(self, data: tensor, property: str = "Temperature [C]"):
+        norm_fct, max_val, min_val, mean_val, std_val = self.get_norm_info(property)
+
+        if norm_fct == "Rescale":
+            out_min, out_max = (
+                0,
+                1,
+            )  # TODO Achtung! Hardcoded, values same as in transforms.NormalizeTransform.out_min/max
+            delta = max_val - min_val
+            data = (data - out_min) / (out_max - out_min) * delta + min_val
+        elif norm_fct == "Standardize":
+            data = data * std_val + mean_val
+        elif norm_fct is None:
+            pass
+        else:
+            raise ValueError(
+                f"Normalization type '{self.norm_fct['Norm']}' not recognized"
+            )
+        return data
+
+    def get_norm_info(self, property: str = "Temperature [C]"):
+        try:
+            norm_fct = self.info["Inputs"][property]["norm"]
+            max_val = self.info["Inputs"][property]["max"]
+            min_val = self.info["Inputs"][property]["min"]
+            mean_val = self.info["Inputs"][property]["mean"]
+            std_val = self.info["Inputs"][property]["std"]
+        except:
+            norm_fct = self.info["Labels"][property]["norm"]
+            max_val = self.info["Labels"][property]["max"]
+            min_val = self.info["Labels"][property]["min"]
+            mean_val = self.info["Labels"][property]["mean"]
+            std_val = self.info["Labels"][property]["std"]
+        return norm_fct, max_val, min_val, mean_val, std_val
+
+    def extract_hp_boxes(self, device:str = "cpu",size_hp:tensor = None, distance_hp:tensor = None) -> list:
+        material_ids = self.get_input_field_from_name("Material ID")
+        if distance_hp is None:
+            distance_hp_corner = tensor([self.info["PositionHPPrior"][1], self.info["PositionHPPrior"][0]])
+        else:
+            distance_hp_corner = distance_hp
+        if size_hp is None:
+            size_hp_box = tensor([self.info["CellsNumberPrior"][0],self.info["CellsNumberPrior"][1],])
+        else:
+            size_hp_box = size_hp
+        hp_boxes = []
+        pos_hps = stack(list(where(material_ids == max(material_ids))), dim=0).T
+        names_inputs = [self.get_name_from_index(i) for i in range(self.inputs.shape[0])]
+
+        for idx in tqdm(range(len(pos_hps))):
+            pos_hp = pos_hps[idx]
+            corner_ll = (pos_hp - distance_hp_corner) # corner lower left
+            corner_ur = (pos_hp + size_hp_box - distance_hp_corner)
+            #if box inside domain
+            if corner_ll[0] >= 0 and corner_ll[1] >= 0 and corner_ur[0] <= self.size[0] and corner_ur[1] <= self.size[1]:
+                tmp_input = self.inputs[:, corner_ll[0] : corner_ur[0], corner_ll[1] : corner_ur[1]].detach().clone()
+                tmp_input[4] = self.prediction[corner_ll[0] : corner_ur[0], corner_ll[1] : corner_ur[1]].clone().detach()
+                tmp_label = self.label[:, corner_ll[0] : corner_ur[0], corner_ll[1] : corner_ur[1]].detach().clone()
+            else:
+                offset_ll = [0,0]
+                # get part that is in domain
+                for i in range(len(corner_ll)):
+                    if corner_ll[i] < 0:
+                        offset_ll[i] = corner_ll[i] * -1
+                        corner_ll[i] = 0
+                offset_ur = [0,0]
+                for i in range(len(corner_ur)):
+                    if corner_ur[i] > self.size[i]:
+                        offset_ur[i] = corner_ur[i] - self.size[i]
+                        corner_ur[i] = self.size[i] - 0
+                part_input = self.inputs[:, corner_ll[0] : corner_ur[0], corner_ll[1] : corner_ur[1]].detach().clone()
+                part_label = self.label[:, corner_ll[0] : corner_ur[0], corner_ll[1] : corner_ur[1]].detach().clone()
+                tmp_input = zeros(part_input.shape[0],size_hp_box[0],size_hp_box[1])
+                # initialize boxes with desired size, set value to min_value found in domain part
+                for input in range(part_input.shape[0]):
+                    tmp_input[input] = ones(size_hp_box[0],size_hp_box[1]) * min(part_input[input]).item()
+                tmp_label = zeros(part_label.shape[0],size_hp_box[0],size_hp_box[1])
+                for label in range(part_label.shape[0]):
+                    tmp_label[label] = ones(size_hp_box[0],size_hp_box[1]) * min(part_label[label]).item()
+                # overwrite corresponding part in boxes with the values found in the domain 
+                if (offset_ll == [0,0]):
+                    tmp_input[:,  : size_hp_box[0] - offset_ur[0], : size_hp_box[1] - offset_ur[1]] = part_input.clone().detach()
+                    tmp_label[:, : size_hp_box[0] - offset_ur[0], : size_hp_box[1] - offset_ur[1]] = part_label.clone().detach()
+                else:
+                    tmp_input[:, offset_ll[0] :, offset_ll[1] :] = part_input.clone().detach()
+                    tmp_label[:, offset_ll[0] :, offset_ll[1] :] = part_label.clone().detach()
+
+            tmp_mat_ids = stack(list(where(tmp_input == max(material_ids))), dim=0).T
+            if len(tmp_mat_ids) > 1:
+                for i in range(len(tmp_mat_ids)):
+                    tmp_pos = tmp_mat_ids[i]
+                    if (tmp_pos[1:2] != distance_hp_corner).all():
+                        tmp_input[tmp_pos[0], tmp_pos[1], tmp_pos[2]] = 0
+
+            tmp_hp = HeatPumpBox(id=idx, pos=pos_hp, orientation=0, inputs=tmp_input, names=names_inputs,corner_ll=corner_ll,corner_ur=corner_ur, dist_corner_hp=distance_hp_corner, label=tmp_label, device=device,)
+            if "SDF" in self.info["Inputs"]:
+                tmp_hp.recalc_sdf(self.info)
+
+            hp_boxes.append(tmp_hp)
+            logging.info(
+                f"HP BOX at {pos_hp} is with ({corner_ll}, {corner_ur}) in domain"
+            )
+                
+        return hp_boxes
+
+    def extract_ep_box(self, hp: "HeatPumpBox", params: dict, device:str = "cpu"):
+        # inspired by ep.assemble_inputs + extract_hp_boxes
+
+        # TODO check achtung orientierung hp.primary_temp_field.shape for hp-size
+        corner_ll, corner_ur = get_box_corners(hp.pos, tensor(hp.primary_temp_field.shape), hp.dist_corner_hp, self.inputs.shape[1:], run_name=self.file_name,)
+        # get "inputs" there from domain (only g,k (?) not s, i)
+        start_curr = params["start_curr_box"] + corner_ll[0]
+        # TODO inputs HARDCODED to "gk" from "gksi"
+        input_curr = self.inputs[:2, start_curr : start_curr + params["box_size"], corner_ll[1] : corner_ur[1]].to(device)
+
+        # combine with second half of hp.primary_temp_field as inputs for extend plumes
+        start_prior = params["start_prior_box"]
+        input_prior_T = hp.primary_temp_field[start_prior : start_prior + params["box_size"],:].detach() # before: only 2D
+        # print(start_prior, params["box_size"], hp.primary_temp_field.shape, corner_ll[0])
+        if len(input_prior_T.shape) == 2:
+            input_prior_T = input_prior_T.unsqueeze(0)
+        # print(input_curr.shape, input_prior_T.shape)
+        input_all = cat((input_curr, input_prior_T), dim=0).unsqueeze(0)
+
+        return input_all, corner_ll, corner_ur
+
+    def add_hp(self, hp: "HeatPumpBox"):
+        prediction_field = hp.primary_temp_field
+        #prediction_field = self.reverse_norm(prediction_field, property="Temperature [C]") # for adding to domain
+        # compose learned fields into large domain with list of ids, pos, orientations
+        for i in range(prediction_field.shape[0]):
+            for j in range(prediction_field.shape[1]):
+                x = hp.pos[0] + i - hp.dist_corner_hp[0]
+                y = hp.pos[1] + j - hp.dist_corner_hp[1]
+                # no orientation here, messes with points outside of domain
+                #x, y = self.coord_trafo(hp.pos, (i - hp.dist_corner_hp[0], j - hp.dist_corner_hp[1]), hp.orientation,)
+                if (0 <= x < self.prediction.shape[0] and 0 <= y < self.prediction.shape[1]):
+                    self.prediction[x, y] = self.stitching(self.prediction[x, y], prediction_field[i, j])
+
+    def coord_trafo(self, fixpoint: tuple, position: tuple, orientation: float):
+        """
+        transform coordinates from domain to hp
+        """
+        x = (
+            fixpoint[0]
+            + int(position[0] * cos(orientation))
+            + int(position[1] * sin(orientation))
+        )
+        y = (
+            fixpoint[1]
+            + int(position[0] * sin(orientation))
+            + int(position[1] * cos(orientation))
+        )
+        return x, y
+
+    def plot(self, fields: str = "t", folder: str = "", name: str = "test", format_fig: str = "png", corner_ll: tensor = None, corner_ur: tensor = None):
+        properties = expand_property_names(fields)
+        n_subplots = len(properties)
+        plt.rcParams.update({'font.size': 16})
+        #BOXES HERE
+        fig,ax = plt.subplots(figsize=(8, 4.3))
+        if corner_ll is not None:
+            x = corner_ll[0]
+            y = corner_ll[1]
+            width = corner_ur[0] - corner_ll[0]
+            height = corner_ur[1] - corner_ll[1]
+            rect = patches.Rectangle((x, y), width, height, linewidth=1, edgecolor='g', facecolor='none')
+            ax.add_patch(rect)
+        plt.imshow(self.reverse_norm(self.prediction.detach().numpy().T), cmap="RdBu_r")
+        plt.gca().invert_yaxis()
+        plt.xlabel("x [cells]")
+        plt.ylabel("y [cells]")
+        plt.title(name)
+        _aligned_colorbar(label="")
+        #for presentation
+        plt.savefig(f"{folder}/{name}_prediction.{format_fig}", format=format_fig)
+        plt.clf()
+        if "t" in fields:
+            n_subplots += 2
+        fig,axes = plt.subplots(n_subplots, 1, sharex=True)
+        fig.set_figheight(n_subplots * 3.5)
+        #plt.subplots(n_subplots, 1)
+        idx = 1
+        for property in properties:
+            ax = plt.subplot(n_subplots, 1, idx)
+            if property == "Temperature [C]":
+                if corner_ll is not None:
+                    x = corner_ll[0]
+                    y = corner_ll[1]
+                    width = corner_ur[0] - corner_ll[0]
+                    height = corner_ur[1] - corner_ll[1]
+                    rect = patches.Rectangle((x, y), width, height, linewidth=1, edgecolor='g', facecolor='none')
+                    ax.add_patch(rect)
+                plt.imshow(self.reverse_norm(self.prediction.detach().numpy().T), cmap="RdBu_r")
+                plt.gca().invert_yaxis()
+                plt.xlabel("x [cells]")
+                plt.ylabel("y [cells]")
+                plt.title("Prediction: Temperature in [C°]")
+                _aligned_colorbar(label="")
+                idx += 1
+                #for presentation
+
+                #logging.warning(f"Saving plot to {folder}/{name}.{format_fig}")
+                #return
+            # elif property == "Original Temperature [C]":
+            #     field = self.prediction_1HPNN
+            #     property = "1st Prediction of Temperature [C]"
+            #     plt.imshow(field.detach().numpy().T)
+            else:
+                field = self.get_input_field_from_name(property)
+                field = self.reverse_norm(field, property)
+                plt.imshow(field.detach().numpy().T, cmap="RdBu_r")
+                
+            plt.subplot(n_subplots, 1, idx)
+            plt.imshow(self.label.detach().squeeze().numpy().T, cmap="RdBu_r")
+            plt.gca().invert_yaxis()
+            plt.xlabel("x [cells]")
+            plt.ylabel("y [cells]")
+            plt.title("Label: Temperature in [C°]")
+            _aligned_colorbar(label="")
+            idx += 1
+
+            plt.subplot(n_subplots, 1, idx)
+            if self.label_normed_bool:
+                self.label = self.reverse_norm(self.label, property)
+                self.label_normed_bool = False
+            domain_temp = self.reverse_norm(self.prediction.clone().detach())
+            plt.imshow(abs(domain_temp.T - squeeze(self.label).T).detach().numpy(), cmap="RdBu_r")
+            plt.gca().invert_yaxis()
+            plt.xlabel("x [cells]")
+            plt.ylabel("y [cells]")
+            plt.title("Absolute error in [C°]")
+            _aligned_colorbar(label="")
+            idx += 1
+        plt.tight_layout()
+        plt.savefig(f"{folder}/{name}.{format_fig}", format=format_fig)
+        logging.warning(f"Saving plot to {folder}/{name}.{format_fig}")
+
+
+def get_box_corners(pos_hp, size_hp_box, distance_hp_corner, domain_shape, run_name: str = "unknown"):
+    corner_ll = (pos_hp - distance_hp_corner) # corner lower left
+    corner_ur = (pos_hp + size_hp_box - distance_hp_corner) # corner upper right
+    try:
+        corner_ll = corner_ll.to(dtype=torch_long) 
+        corner_ur = corner_ur.to(dtype=torch_long) 
+    except:
+        pass
+    # if corner_ll[0] < 0 or corner_ur[0] >= domain_shape[0] or corner_ll[1] < 0 or corner_ur[1] >= domain_shape[1]:
+    #     # move file from "Inputs" to "broken/Inputs"
+    #     logging.warning(f"HP BOX at {pos_hp} is with x=({corner_ll[0]}, {corner_ur[0]}) in x-direction (0, {domain_shape[0]}) or y=({corner_ll[1]}, {corner_ur[1]}) in y-direction (0, {domain_shape[1]}) not in domain for {run_name}")
+    #     origin_2hp_prep = "/home/pelzerja/Development/datasets_prepared/2hps_demonstrator/dataset_2hps_1fixed_1000dp_grad_p"
+    #     # TODO rm absolute path
+    #     shutil.move(os.path.join(origin_2hp_prep, "Inputs", run_name), os.path.join(origin_2hp_prep, "broken", "Inputs", f"{run_name.split('.')[0]}_hp_pos_outside_domain.pt"))
+    #     shutil.move(os.path.join(origin_2hp_prep, "Labels", run_name), os.path.join(origin_2hp_prep, "broken", "Labels", run_name))
+    assert (corner_ll[0] >= 0 and corner_ur[0] < domain_shape[0]), f"HP BOX at {pos_hp} is with x=({corner_ll[0]}, {corner_ur[0]}) in x-direction (0, {domain_shape[0]}) not in domain for {run_name}"
+    assert (corner_ll[1] >= 0 and corner_ur[1] < domain_shape[1]), f"HP BOX at {pos_hp} is with y=({corner_ll[1]}, {corner_ur[1]}) in y-direction (0, {domain_shape[1]}) not in domain for {run_name}"
+
+    return corner_ll, corner_ur

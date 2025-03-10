@@ -14,7 +14,8 @@ from postprocessing.visualization import visualizations
 
 from data_stuff.utils import SettingsTraining
 from networks.unet import weights_init, UNet
-from networks.unetHalfPad import UNetHalfPad
+from networks.unetQuad import UNetQuad
+from networks.unetParallel import UNetParallel
 
 @dataclass
 class Solver(object):
@@ -29,7 +30,7 @@ class Solver(object):
 
     def __post_init__(self):
         self.opt = self.opt(self.model.parameters(),
-                            self.learning_rate, weight_decay=1e-4)
+                            self.learning_rate, weight_decay=1e-5)
         # contains the epoch and learning rate, when lr changes
         self.lr_schedule = {0: self.opt.param_groups[0]["lr"]}
 
@@ -100,7 +101,12 @@ class Solver(object):
                         #     writer.add_histogram(name, param, epoch)
 
             except KeyboardInterrupt:
-                model_tmp = UNetHalfPad(in_channels=len(settings.inputs), out_channels=1) # UNet
+                if settings.architecture == "standard":
+                    model_tmp = UNet(in_channels=len(settings.inputs), out_channels=1) # UNet
+                elif settings.architecture == "quad":
+                    model_tmp = UNetQuad(in_channels=len(settings.inputs), out_channels=1)
+                else:
+                    model_tmp = UNetParallel(in_channels=len(settings.inputs), out_channels=1)
                 model_tmp.load_state_dict(self.best_model_params["state_dict"])
                 model_tmp.to(settings.device)
                 model_tmp.save(settings.destination, model_name=f"interim_model_e{epoch}.pt")
@@ -127,7 +133,7 @@ class Solver(object):
 
     def run_epoch(self, dataloader: DataLoader, device: str):
         epoch_loss = 0.0
-        for x, y in dataloader:
+        for x, y, fname in dataloader:
             x = x.to(device)
             y = y.to(device)
 

@@ -5,6 +5,8 @@ datasets_prepared/
 nerf/
 WIP_rnn/
 
+unittests/dummy_destination
+
 # exclude for now
 runs/
 *.out

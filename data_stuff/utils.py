@@ -1,4 +1,3 @@
-import os
 import pathlib
 from dataclasses import dataclass
 from typing import Dict
@@ -29,9 +28,11 @@ class SettingsTraining:
     model: str = None
     test: bool = False
     case_2hp: bool = False
+    prepare_xhp: bool = False
     visualize: bool = False
+    already_prep: bool = False
     save_inference: bool = False
-    problem: str = "2stages"
+    architecture: str = "standard"
     notes: str = ""
     skip_per_dir: int = 4
     len_box: int = 256
