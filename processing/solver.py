@@ -15,8 +15,7 @@ from postprocessing.visualization import visualizations
 from pathlib import Path
 
 from data_stuff.utils import SettingsTraining
-from networks.unet import weights_init, UNet
-from networks.unet3d import weights_init_3d
+from networks.unet import UNet
 from networks.unetHalfPad import UNetHalfPad
 
 @dataclass
@@ -39,11 +38,7 @@ class Solver(object):
         self.lr_scheduler = ReduceLROnPlateau(self.opt, 'min', factor=0.5, patience=10, cooldown=10, min_lr=1e-6)                   
 
         if not self.finetune:
-            if self.model.__class__.__name__=="UNet3d":
-                print(self.model.__class__.__name__)
-                self.model.apply(weights_init_3d)
-            else:
-                self.model.apply(weights_init)
+            self.model.apply(self.model.weights_init)
 
         # measure additional metrics during training
         self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss()}                                            
