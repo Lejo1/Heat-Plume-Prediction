@@ -2,8 +2,6 @@ from copy import deepcopy
 from pathlib import Path
 import torch
 from tqdm.auto import tqdm
-import matplotlib
-matplotlib.use('QtAgg')
 import matplotlib.pyplot as plt
 
 from preprocessing.prepare_dataset import prepare_dataset, is_unprepared
@@ -26,6 +24,7 @@ def preprocessing(args:dict):
 
         if args["problem"] == "allin1" and "n" in args["inputs"]: # case: different datasets
             # TODO handling of different datasets and several stages
+            # TODO still an "exit()" in the function
             additional_inputs_unnormed = preprocessing_allin1_v2(args)
         else: 
             additional_inputs_unnormed = None
