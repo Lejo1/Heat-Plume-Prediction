@@ -36,6 +36,8 @@ class DataToVisualize:
 
         if "temperature" in self.physical_property.lower():
             cmap = "jp_temperature"
+        elif "material" in self.physical_property.lower():
+            cmap = "binary"
         else:
             cmap = "jp_linear"
             
@@ -146,24 +148,24 @@ def prepare_data_to_plot(x: torch.Tensor, y: torch.Tensor, y_out:torch.Tensor, i
     required_size = y_out.shape
     start_pos = ((y.shape[1] - required_size[1])//2, (y.shape[2] - required_size[2])//2)
     y_reduced = y[:,start_pos[0]:start_pos[0]+required_size[1], start_pos[1]:start_pos[1]+required_size[2]]
-    print("required", required_size, "start", start_pos, "y shape", y.shape, "y_reduced shape", y_reduced.shape)
+    # print("required", required_size, "start", start_pos, "y shape", y.shape, "y_reduced shape", y_reduced.shape)
     
     outs_max = [max(y_reduced[idx].max(), y_out[idx].max()) for idx in range(len(y_reduced))]
     outs_min = [min(y_reduced[idx].min(), y_out[idx].min()) for idx in range(len(y_reduced))]
-    extent_highs = (np.array(info["CellsSize"][:2]) * x.shape[-2:])
-
+    extent_highs_y = (np.array(info["CellsSize"][:2]) * y_out.shape[-2:])
+    
     dict_to_plot = {}
     labels = info["Labels"].keys()
     for label in labels:
         index = info["Labels"][label]["index"]
         print(outs_max[index], outs_min[index])
-        dict_to_plot[f"{label}_true"] = DataToVisualize(y_reduced[index], "Label", label, extent_highs, vmax=outs_max[index], vmin=outs_min[index])
-        dict_to_plot[f"{label}_out"] = DataToVisualize(y_out[index], "Prediction", label, extent_highs, vmax=outs_max[index], vmin=outs_min[index])
-        dict_to_plot[f"{label}_error"] = DataToVisualize(torch.abs(y_reduced[index]-y_out[index]), "Absolute Error", label, extent_highs)
+        dict_to_plot[f"{label}_true"] = DataToVisualize(y_reduced[index], "Label", label, extent_highs_y, vmax=outs_max[index], vmin=outs_min[index])
+        dict_to_plot[f"{label}_out"] = DataToVisualize(y_out[index], "Prediction", label, extent_highs_y, vmax=outs_max[index], vmin=outs_min[index])
+        dict_to_plot[f"{label}_error"] = DataToVisualize(torch.abs(y_reduced[index]-y_out[index]), "Absolute Error", label, extent_highs_y)
     inputs = info["Inputs"].keys()
     for input in inputs:
         index = info["Inputs"][input]["index"]
-        dict_to_plot[input] = DataToVisualize(x[index], "Input", input, extent_highs)
+        dict_to_plot[input] = DataToVisualize(x[index], "Input", input, (np.array(info["CellsSize"][:2]) * x.shape[-2:]))
 
     return dict_to_plot
 
