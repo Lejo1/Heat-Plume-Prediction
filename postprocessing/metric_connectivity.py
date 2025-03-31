@@ -83,7 +83,7 @@ def connectivity_field_flood(mat_ids_unnormed, mask_output):
 def calc_connectivity(model_path:Path, data_path:Path, data_id: int, model:UNet, id_mat_ids:int, threshold:float):
     # Data and model loading
     model.load(model_path)
-    data = DataPoint(data_path, idx=data_id)
+    data = DataPoint(data_path, i=data_id)
     inputs, label = data[0]
     output = model.infer(inputs.unsqueeze(0))
 
