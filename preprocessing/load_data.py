@@ -13,7 +13,7 @@ def load_data(data_path: Path, time: str, variables: dict, dimensions_of_datapoi
     if refined:
         fct_reshape = lambda x,key: reshape_refined(data_path.parent, x, dimensions_of_datapoint, goal_resolution, key)
     else:
-        fct_reshape = lambda x, key: x.reshape(dimensions_of_datapoint, order='F')
+        fct_reshape = lambda x, key: x.reshape(dimensions_of_datapoint)
     data = dict()
     with h5py.File(data_path, "r") as file:
         for key in variables:  # properties
