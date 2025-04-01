@@ -1,7 +1,7 @@
 import torch
 from torch import Generator, default_generator, randperm
-from torch._utils import _accumulate
-from torch.utils.data import Subset
+from torch.utils.data import Subset, random_split
+from itertools import accumulate
 from typing import List, Optional, Sequence
 
 from preprocessing.datasets.dataset import DatasetBasis
@@ -78,4 +78,4 @@ def random_split_extend(dataset: DatasetExtend, lengths: Sequence[int],
 
     lengths = [length * dataset.dp_per_run for length in lengths]
 
-    return [Subset(dataset, indices_extend[offset - length : offset]) for offset, length in zip(_accumulate(lengths), lengths)]
+    return [Subset(dataset, indices_extend[offset - length : offset]) for offset, length in zip(accumulate(lengths), lengths)]

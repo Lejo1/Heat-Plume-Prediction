@@ -53,14 +53,9 @@ class DatasetBasis(Dataset):
         return input, label
 
 class DataPoint(DatasetBasis):
-    def __init__(self, path:str, idx:int=0):
+    def __init__(self, path:str, i:int=0):
         DatasetBasis.__init__(self, path)
-        run_id = get_run_ids_from_prep(self.path / "Inputs")[idx]
+        run_id = get_run_ids_from_prep(self.path / "Inputs")[i]
         
         self.input_names = [f"RUN_{run_id}.pt"]
         self.label_names = [f"RUN_{run_id}.pt"]
-        
-def get_splits(n, splits):
-    splits = [int(n * s) for s in splits[:-1]]
-    splits.append(n - sum(splits))
-    return splits
