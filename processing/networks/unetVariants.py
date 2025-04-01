@@ -169,34 +169,56 @@ class OneSidePadding(nn.Module):
             result = nn.functional.pad(x, padding_vector, mode='constant')
         return result
 
+def get_activation_fct(name:str):
+    if name.lower() == "relu":
+        return nn.ReLU(inplace=True)
+    elif name.lower() == "leakyrelu":
+        return nn.LeakyReLU(inplace=True)
+    elif name.lower() == "sigmoid":
+        return nn.Sigmoid()
+    elif name.lower() == "tanh":
+        return nn.Tanh()
+        
 class UNetNoPad2(UNet):
-    def __init__(self, in_channels=2, out_channels=1, init_features=32, depth=3, kernel_size=5):
+    def __init__(self, in_channels=2, out_channels=1, init_features=32, depth=3, kernel_size=5, stride=1, dilation=1, activation="relu", norm=True, repeat_inner=False):
         super().__init__()
         features = init_features
+        activation = get_activation_fct(activation)
+        self.stride = stride
+
         self.encoders = nn.ModuleList()
         self.pools = nn.ModuleList()
+
         for _ in range(depth):
-            self.encoders.append(self._block(in_channels, features, kernel_size=kernel_size))
-            self.pools.append(nn.MaxPool2d(kernel_size=2, stride=2))
+            self.encoders.append(self._block(in_channels, features, kernel_size=kernel_size, stride=stride, dilation=dilation, activation=activation, norm=norm, repeat_inner=repeat_inner))
+            if self.stride == 1:
+                self.pools.append(nn.MaxPool2d(kernel_size=2, stride=2))
             in_channels = features
             features *= 2
-        self.encoders.append(self._block(in_channels, features, kernel_size=kernel_size))
+        self.encoders.append(self._block(in_channels, features, kernel_size=kernel_size, stride=stride, dilation=dilation, activation=activation, norm=norm, repeat_inner=repeat_inner))
 
         self.upconvs = nn.ModuleList()
         self.decoders = nn.ModuleList()
         for _ in range(depth):
             self.upconvs.append(nn.ConvTranspose2d(features, features//2, kernel_size=2, stride=2))
-            self.decoders.append(self._block(features, features//2, kernel_size=kernel_size))
+            self.decoders.append(self._block(features, features//2, kernel_size=kernel_size, dilation=dilation, activation=activation, norm=norm, repeat_inner=repeat_inner))
             features = features // 2
 
         self.conv = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)
 
     def forward(self, x: tensor) -> tensor:
         encodings = []
-        for encoder, pool in zip(self.encoders, self.pools):
-            x = encoder(x)
-            encodings.append(x)
-            x = pool(x)
+        if self.stride == 1:
+            for encoder, pool in zip(self.encoders, self.pools):
+                x = encoder(x)
+                encodings.append(x)
+                x = pool(x)
+        else:
+            for encoder in self.encoders[:-1]:
+                x = encoder(x)
+                encodings.append(x)
+                x = nn.functional.pad(x, (0, 0, 0, 1), mode='circular')
+                x = nn.functional.pad(x, (0, 0, 1, 0), mode='constant')
         x = self.encoders[-1](x)
 
         for upconv, decoder, encoding in zip(self.upconvs, self.decoders, reversed(encodings)):
@@ -210,14 +232,49 @@ class UNetNoPad2(UNet):
         return self.conv(x)
 
     @staticmethod
-    def _block(in_channels, features, kernel_size=5):
-        return nn.Sequential(
-            nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=features,
-                kernel_size=kernel_size,
-                bias=True,
-            ),
-            nn.BatchNorm2d(num_features=features),
-            nn.ReLU(inplace=True),
-        )
+    def _block(in_channels, features, kernel_size=5, stride=1, dilation=1, activation=nn.ReLU(), norm:str=None, repeat_inner=False):
+        def f_conv():
+            return nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=features,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=dilation,
+            bias=True,)
+        def f_norm():
+            if norm.lower() == "batchnorm":
+                return nn.BatchNorm2d(num_features=features)
+            elif norm.lower() == "groupnorm":
+                return nn.GroupNorm(num_groups=4, num_channels=features)
+            else:
+                return nn.Identity()
+        
+        if repeat_inner and norm:
+            return nn.Sequential(
+                f_conv(),
+                activation,
+                f_conv(),
+                f_norm(),
+                activation,
+            )
+        
+        elif (not repeat_inner) and norm:
+            return nn.Sequential(
+                f_conv(),
+                f_norm(),
+                activation,
+            )
+        
+        elif (not repeat_inner) and (norm is None):
+            return nn.Sequential(
+                f_conv(),
+                activation,
+            )
+        
+        elif repeat_inner and (norm is None):
+            return nn.Sequential(
+                f_conv(),
+                activation,
+                f_conv(),
+                activation,
+            )
