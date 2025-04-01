@@ -4,6 +4,7 @@ paths_sdf.yaml
 datasets_prepared/
 cdmlp/
 lightning_logs/
+wandb/
 
 # exclude for now
 runs/
