@@ -10,12 +10,13 @@ from torch.optim import Adam, Optimizer, lr_scheduler, LBFGS
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
+from copy import deepcopy
 
 from postprocessing.visualization import visualizations
 from processing.networks.unetVariants import UNetNoPad2
 from processing.networks.model import weights_init
 from utils.utils_args import save_yaml
-from processing.losses import CombiLoss, SSIMLoss, KLD_log, LinfLoss
+from processing.losses import CombiLoss, SSIMLoss, KLD_log, LinfLoss, IoULoss
 from torchmetrics.regression import MeanAbsolutePercentageError as MAPE
 
 @dataclass
@@ -34,12 +35,12 @@ class Solver(object):
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
         # contains the epoch and learning rate, when lr changes
         self.lr_schedule = {0: self.opt.param_groups[0]["lr"]}
-        # self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.opt, patience=5, cooldown=10, factor=0.5)
+        self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.opt, patience=5, cooldown=10, factor=0.5)
 
         if not self.finetune:
             self.model.apply(weights_init)
         
-        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss(), "Linf": LinfLoss(), "SSIM": SSIMLoss(), "MAPE": MAPE()} #, "X-MSE": None, "Y-MSE": None}
+        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "Linf": LinfLoss(), "Huber": HuberLoss(), "KLD": KLD_log(), "SmoothL1": SmoothL1Loss(), "SSIM": SSIMLoss(), "MAPE": MAPE(), "IoU": IoULoss()} #, "X-MSE": None, "Y-MSE": None}
 
     def train(self, args: dict):
         manual_seed(0)
@@ -247,7 +248,7 @@ class Solver(object):
                     try:
                         metrics[f"{case} {name}"] = metric(y_pred, y_reduced).detach().item()
                     except:
-                        metrics[f"{case} {name}"] = metric(y_pred, y_reduced)
+                        metrics[f"{case} {name}"] = metric(y_pred.cpu(), y_reduced.cpu())
                 metrics[f"{case} RMSE"] = MSELoss()(y_pred, y_reduced).detach().item()**0.5
             metrics["No. params"] = self.model.num_of_params()
             metrics["Best epoch"] = self.best_model_params["epoch"]

@@ -54,3 +54,21 @@ class LinfLoss(nn.Module):
 
     def forward(self, output, target):
         return max(abs(output - target))
+
+class IoULoss(nn.Module):
+    # best value is 1.0, worst is 0.0
+    def __init__(self):
+        super(IoULoss, self).__init__()
+        # on binary mask of 0.9 threshold (values between 0 and 1)
+        # TODO currently normalized data -> go to real data?
+        self.threshold = 0.9 # TODO find reasonable threshold
+        self.epsilon = 1e-6 # to avoid division by zero
+
+    def forward(self, output, label):
+        output = output > self.threshold
+        label = label > self.threshold
+        intersection = (output & label).float().sum((2, 3))
+        union = (output | label).float().sum((2, 3))
+        iou = (intersection + self.epsilon) / (union + self.epsilon)
+        print(f"iou: {iou.shape}, {iou}, {intersection.shape}, {union.shape}, {label.shape}")
+        return iou.mean() # averaged over batch and channels
