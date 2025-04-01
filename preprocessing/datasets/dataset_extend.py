@@ -1,6 +1,6 @@
 import torch
 from torch import Generator, default_generator, randperm
-from torch.utils.data import Subset, random_split
+from torch.utils.data import Subset
 from itertools import accumulate
 from typing import List, Optional, Sequence
 
