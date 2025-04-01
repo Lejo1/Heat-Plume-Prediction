@@ -4,9 +4,9 @@ import pathlib
 import time
 from dataclasses import dataclass
 
-from torch import manual_seed, Tensor, log
-from torch.nn import Module, modules, MSELoss, L1Loss, KLDivLoss, HuberLoss, SmoothL1Loss
-from torch.optim import Adam, Optimizer, lr_scheduler
+from torch import manual_seed
+from torch.nn import Module, modules, MSELoss, L1Loss, HuberLoss, SmoothL1Loss
+from torch.optim import Adam, Optimizer, lr_scheduler, LBFGS
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
@@ -14,13 +14,8 @@ from tqdm.auto import tqdm
 from postprocessing.visualization import visualizations
 from processing.networks.unetVariants import UNetNoPad2
 from processing.networks.model import weights_init
-
-class KLD_log():
-    def __init__(self):
-        self.kld = KLDivLoss()
-
-    def __call__(self, prediction: Tensor, label: Tensor):
-        return self.kld(log(prediction), label)
+from utils.utils_args import save_yaml
+from processing.losses import CombiLoss, SSIMLoss, KLD_log, LinfLoss
 
 @dataclass
 class Solver(object):
@@ -43,7 +38,7 @@ class Solver(object):
         if not self.finetune:
             self.model.apply(weights_init)
         
-        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss(), "X-MSE": None, "Y-MSE": None}
+        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss(), "Linf": LinfLoss(), "SSIM": SSIMLoss()} #, "X-MSE": None, "Y-MSE": None}
 
     def train(self, args: dict):
         manual_seed(0)
@@ -151,7 +146,10 @@ class Solver(object):
             elif metric_name == "Y-MSE":
                 metric_values[metric_name] = MSELoss()(y_pred[:, 1, :, :], y_reduced[:, 1, :, :]).detach().item()
             else:
-                metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
+                try:
+                    metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
+                except:
+                    metric_values[metric_name] = metric(y_pred, y_reduced) # necessary exception for SSIM, because it requires to detach before calculating this loss
             
         return epoch_loss, metric_values
 
@@ -176,8 +174,30 @@ class Solver(object):
                 epoch, lr = line.split(",")
                 self.lr_schedule[int(epoch)] = float(lr)
 
-    def save_metrics(self, destination: pathlib.Path, no_params:int, max_epochs:int, training_time:float, device: str = "cpu"):
+    def save_metrics_separate_yaml(self, destination: pathlib.Path, no_params:int, max_epochs:int, training_time:float, device: str = "cpu"):
+        # prepare data as dict
+
+        self.model.eval()
+        train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device)
+        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+
+        metrics = {}
+        metrics["no_params"] = no_params
+        metrics["max_epochs"] = max_epochs
+        metrics["training_time [s]"] = training_time
+        metrics["best_epoch"] = self.best_model_params["epoch"]
+        metrics["train"] = other_losses_train
+        metrics["train"]["train loss"] = train_epoch_loss
+        metrics["val"] = other_losses_val
+        metrics["val"]["val loss"] = val_epoch_loss
+
+        # save data as yaml
+        save_yaml(metrics, destination / "measurements.yaml")
+
+
+    def save_metrics_to_overall_csv(self, destination: pathlib.Path, no_params:int, max_epochs:int, training_time:float, device: str = "cpu"):
         csv_file = open(destination.parent / "measurements_all_metrics.csv", "a")
+
         # no. parameters, max. epochs, training time
         csv_writer = csv.writer(csv_file)
 
@@ -192,7 +212,6 @@ class Solver(object):
         for _, val in other_losses_val.items():
             other_losses_val_list.append(val)
 
-        print(destination.name, self.best_model_params["epoch"], train_epoch_loss, val_epoch_loss)
         row = [destination.name, self.best_model_params["epoch"], train_epoch_loss, val_epoch_loss]
         row.extend(other_losses_train_list)
         row.extend(other_losses_val_list)
@@ -200,3 +219,36 @@ class Solver(object):
                
         csv_writer.writerow(row)
         csv_file.close()
+
+    def get_metrics_wandb(self, model: Module, dataloaders: dict, args: dict, training_time: float, vT_case: str = "vT"):
+        """ get metrics for wandb """
+        self.model.eval()
+        metrics = {}
+        for case, dataloader in dataloaders.items():
+            if case in ["train", "test"]:
+                continue
+            for x, y in dataloader:
+                x = x.to(args["device"])
+                y = y.to(args["device"])
+
+                y_pred = model(x)
+                required_size = y_pred.shape[2:]
+                start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
+                y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
+                # Calculate metrics
+                if vT_case == "velocities":
+                    metrics[f"{case} X-MSE"] = MSELoss()(y_pred[:, 0, :, :], y_reduced[:, 0, :, :]).detach().item()
+                    metrics[f"{case} Y-MSE"] = MSELoss()(y_pred[:, 1, :, :], y_reduced[:, 1, :, :]).detach().item()
+                metrics[f"{case} MSE"] = MSELoss()(y_pred, y_reduced).detach().item()
+                metrics[f"{case} MAE"] = L1Loss()(y_pred, y_reduced).detach().item()
+                metrics[f"{case} KLD"] = KLD_log()(y_pred, y_reduced).detach().item()
+                metrics[f"{case} Huber"] = HuberLoss()(y_pred, y_reduced).detach().item()
+                metrics[f"{case} SmoothL1"] = SmoothL1Loss()(y_pred, y_reduced).detach().item()
+                # metrics[f"{case} SSIM"] = SSIMLoss()(y_pred, y_reduced).detach().item()
+                metrics[f"{case} CombiLoss"] = CombiLoss()(y_pred, y_reduced).detach().item()
+                metrics[f"{case} RMSE"] = MSELoss()(y_pred, y_reduced).detach().item()**0.5
+            metrics["No. params"] = self.model.num_of_params()
+            metrics["Best epoch"] = self.best_model_params["epoch"]
+            metrics["Training time in s"] = training_time
+
+        return metrics

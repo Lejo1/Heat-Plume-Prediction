@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from processing.networks.unet import UNet
 from processing.solver import Solver
+from utils.utils_args import save_yaml
 
 
 def measure_len_width_1K_isoline(data: Dict[str, "DataToVisualize"]):
@@ -96,10 +97,10 @@ def measure_losses_paper24(model: UNet, dataloaders: Dict[str, DataLoader], args
         pbt_thresholds = [0.1, 1] # [°C] # only relevant for temperature
     
     device = args["device"]
-    if args["problem"] == "allin1" and tmp_bool_cutouts:
+    if args["problem"] == "allin1": # and tmp_bool_cutouts:
         norm = dataloaders["train"].dataset.norm
         output_channels = dataloaders["train"].dataset.output_channels
-    elif args["problem"] in ["1hp", "2stages", "allin1"]:
+    elif args["problem"] in ["1hp", "2stages"]:
         norm = dataloaders["train"].dataset.dataset.norm
         output_channels = dataloaders["train"].dataset.dataset.output_channels
     model.eval()
@@ -170,7 +171,9 @@ def measure_losses_paper24(model: UNet, dataloaders: Dict[str, DataLoader], args
         
         if vT_case == "temperature":
             results[case]["PAT (percentage above threshold in [%]"] = output_pbt
-    return results
+
+    save_yaml(results, args["destination"] / "metrics_paper24.yaml")
+    # return results
 
 # collect metric of test data for all models
 def collect_metric(metrics, dataset, metric_name, idx=0):

@@ -63,13 +63,12 @@ def train(args: dict):
         # save model and train metrics
         training_time = datetime.now() - training_time
         model.save(args["destination"])
-        solver.save_metrics(args["destination"], model.num_of_params(), args["epochs"], training_time, args["device"])
+        solver.save_metrics_to_overall_csv(args["destination"], model.num_of_params(), args["epochs"], training_time, args["device"])
+        solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time, args["device"])
 
     # postprocessing
     # save_all_measurements(args, len(dataloaders["val"].dataset), times={}, solver=solver) #, errors)
-    
-    metrics = measure_losses_paper24(model, dataloaders, args, vT_case=vT_case, tmp_bool_cutouts=tmp_bool_cutouts)
-    save_yaml(metrics, args["destination"] / "metrics_paper24.yaml")
+    measure_losses_paper24(model, dataloaders, args, vT_case=vT_case, tmp_bool_cutouts=tmp_bool_cutouts)
 
     if tmp_bool_cutouts:
         dataloaders = load_all_datasets_in_full(args)
