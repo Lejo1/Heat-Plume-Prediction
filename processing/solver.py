@@ -3,6 +3,7 @@ import logging
 import pathlib
 import time
 from dataclasses import dataclass
+import wandb
 
 from torch import manual_seed
 from torch.nn import Module, modules, MSELoss, L1Loss, HuberLoss, SmoothL1Loss
@@ -68,14 +69,22 @@ class Solver(object):
                 if epoch in self.lr_schedule.keys():
                     self.opt.param_groups[0]["lr"] = self.lr_schedule[epoch]
                     
+                # Training
+                self.model.train()
+                train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device)
+
                 # Validation
                 # if epoch % 10 == 0:
                 self.model.eval()
                 val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
 
-                # Training
-                self.model.train()
-                train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device)
+                try:
+                    wandb.log({"train-loss": train_epoch_loss}, step=epoch)
+                    wandb.log({"val-loss": val_epoch_loss}, step=epoch)
+                    wandb.log({"val": other_losses_val}, step=epoch)
+                    wandb.log({"lr": self.opt.param_groups[0]["lr"]}, step=epoch)
+                except Exception as e:
+                    logging.error(f"Could not log to wandb: {e}")
 
                 # if epoch % 10 == 0:
                 for metric_name, metric_value in other_losses_val.items():
