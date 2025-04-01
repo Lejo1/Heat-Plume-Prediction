@@ -16,6 +16,7 @@ from processing.networks.unetVariants import UNetNoPad2
 from processing.networks.model import weights_init
 from utils.utils_args import save_yaml
 from processing.losses import CombiLoss, SSIMLoss, KLD_log, LinfLoss
+from torchmetrics.regression import MeanAbsolutePercentageError as MAPE
 
 @dataclass
 class Solver(object):
@@ -38,7 +39,7 @@ class Solver(object):
         if not self.finetune:
             self.model.apply(weights_init)
         
-        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss(), "Linf": LinfLoss(), "SSIM": SSIMLoss()} #, "X-MSE": None, "Y-MSE": None}
+        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "KLD": KLD_log(), "Huber": HuberLoss(), "SmoothL1": SmoothL1Loss(), "Linf": LinfLoss(), "SSIM": SSIMLoss(), "MAPE": MAPE()} #, "X-MSE": None, "Y-MSE": None}
 
     def train(self, args: dict):
         manual_seed(0)
@@ -149,7 +150,8 @@ class Solver(object):
                 try:
                     metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
                 except:
-                    metric_values[metric_name] = metric(y_pred, y_reduced) # necessary exception for SSIM, because it requires to detach before calculating this loss
+                    metric_values[metric_name] = metric(y_pred.cpu(), y_reduced.cpu())
+                    # necessary exception for MAPE (some error in the function requires to put all to cpu) # necessary exception for SSIM, because it requires to detach before calculating this loss
             
         return epoch_loss, metric_values
 
@@ -239,13 +241,13 @@ class Solver(object):
                 if vT_case == "velocities":
                     metrics[f"{case} X-MSE"] = MSELoss()(y_pred[:, 0, :, :], y_reduced[:, 0, :, :]).detach().item()
                     metrics[f"{case} Y-MSE"] = MSELoss()(y_pred[:, 1, :, :], y_reduced[:, 1, :, :]).detach().item()
-                metrics[f"{case} MSE"] = MSELoss()(y_pred, y_reduced).detach().item()
-                metrics[f"{case} MAE"] = L1Loss()(y_pred, y_reduced).detach().item()
-                metrics[f"{case} KLD"] = KLD_log()(y_pred, y_reduced).detach().item()
-                metrics[f"{case} Huber"] = HuberLoss()(y_pred, y_reduced).detach().item()
-                metrics[f"{case} SmoothL1"] = SmoothL1Loss()(y_pred, y_reduced).detach().item()
-                # metrics[f"{case} SSIM"] = SSIMLoss()(y_pred, y_reduced).detach().item()
-                metrics[f"{case} CombiLoss"] = CombiLoss()(y_pred, y_reduced).detach().item()
+                for name, metric in self.metrics.items():
+                    if name == "X-MSE" or name == "Y-MSE":
+                        continue
+                    try:
+                        metrics[f"{case} {name}"] = metric(y_pred, y_reduced).detach().item()
+                    except:
+                        metrics[f"{case} {name}"] = metric(y_pred, y_reduced)
                 metrics[f"{case} RMSE"] = MSELoss()(y_pred, y_reduced).detach().item()**0.5
             metrics["No. params"] = self.model.num_of_params()
             metrics["Best epoch"] = self.best_model_params["epoch"]
