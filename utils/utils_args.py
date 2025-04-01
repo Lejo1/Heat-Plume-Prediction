@@ -1,7 +1,8 @@
 from pathlib import Path
 import yaml
 from typing import List, Union
-import argparse
+from torch import Tensor
+import numpy as np
 
 def assertions_args(args:dict):
     if args["case"] in ["test", "finetune"]:
@@ -74,10 +75,22 @@ def load_yaml(path: Path, **kwargs) -> dict:
             args = yaml.load(file, **kwargs)
     return args
 
+# Convert tensors to Python-native types
+def convert_to_python_datatypes(data):
+    if isinstance(data, Tensor):
+        return data.item() if data.numel() == 1 else data.tolist()
+    elif isinstance(data, (np.ndarray, np.generic)):
+        return data.item() if np.isscalar(data) else data.tolist()
+    elif isinstance(data, dict):
+        return {k: convert_to_python_datatypes(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [convert_to_python_datatypes(v) for v in data]
+    else:
+        return data
+
+
 def save_yaml(args:dict, destination_file):
     with open(destination_file, "w") as file:
-        # TODO TEST
-        # try:
         tmp = args.copy()
         for arg in args.keys():
             try:
@@ -85,9 +98,10 @@ def save_yaml(args:dict, destination_file):
                     tmp[info] = path_to_str(arg[info])
             except:
                 tmp[arg] = path_to_str(args[arg])
-        yaml.dump(tmp, file)
-        # except:
-        #     yaml.dump(args, file)
+        # Convert tensors to Python-native types
+        tmp = convert_to_python_datatypes(tmp)
+        # Save to YAML file
+        yaml.dump(tmp, file, default_flow_style=False)
 
 def path_to_str(arg: Union[Path, str]) -> str:
     '''if arg a Path object, convert to string'''
