@@ -180,7 +180,7 @@ def get_activation_fct(name:str):
         return nn.Tanh()
         
 class UNetNoPad2(UNet):
-    def __init__(self, in_channels=2, out_channels=1, init_features=32, depth=3, kernel_size=5, stride=1, dilation=1, activation="relu", norm=True, repeat_inner=False):
+    def __init__(self, in_channels:int=2, out_channels:int=1, init_features:int=32, depth:int=3, kernel_size:int=5, stride:int=1, dilation:int=1, activation:str="relu", norm:str=None, repeat_inner:bool=False):
         super().__init__()
         features = init_features
         activation = get_activation_fct(activation)
