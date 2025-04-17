@@ -39,8 +39,8 @@ class Solver(object):
         self.lr_schedule = {0: self.opt.param_groups[0]["lr"]}
         # self.lr_scheduler = lr_scheduler.ReduceLROnPlateau(self.opt, patience=5, cooldown=10, factor=0.5)
 
-        if not self.finetune:
-            self.model.apply(weights_init)
+        # if not self.finetune:
+        #     self.model.apply(weights_init)
         
         self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "Linf": LinfLoss(), "Huber": HuberLoss(), "KLD": KLD_log(), "SmoothL1": SmoothL1Loss(), "SSIM": SSIMLoss(), "MAPE": MAPE(), "IoU": IoULoss()} #, "X-MSE": None, "Y-MSE": None}
 
@@ -56,6 +56,8 @@ class Solver(object):
         self.epoch_switch_optimizer = args["epochs"] + 1
         if self.optimizer_switch:
             self.epoch_switch_optimizer = int(0.9 * self.epoch_switch_optimizer)
+            
+        print(self.model)
 
         epochs = tqdm(range(args["epochs"]), desc="epochs", disable=False)
         for epoch in epochs:
@@ -166,7 +168,6 @@ class Solver(object):
             required_size = y_pred.shape[2:]
             start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
             y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
-
             loss = self.loss_func(y_pred, y_reduced)
 
             if self.model.training:

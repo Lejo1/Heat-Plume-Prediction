@@ -70,5 +70,5 @@ class IoULoss(nn.Module):
         intersection = (output & label).float().sum((2, 3))
         union = (output | label).float().sum((2, 3))
         iou = (intersection + self.epsilon) / (union + self.epsilon)
-        print(f"iou: {iou.shape}, {iou}, {intersection.shape}, {union.shape}, {label.shape}")
+        # print(f"iou: {iou.shape}, {iou}, {intersection.shape}, {union.shape}, {label.shape}")
         return iou.mean() # averaged over batch and channels

@@ -7,7 +7,7 @@ from preprocessing.datasets.dataset_1stbox import Dataset1stBox
 from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
 from preprocessing.datasets.dataset_extend import DatasetExtend, DatasetEncoder, random_split_extend
 
-ORDER_DATA = [0,2,1] # in RUN-ID labels this is [0,3,2]
+ORDER_DATA = [0,0,0] # in RUN-ID labels this is [0,3,2]
 
 def init_data(args:dict, seed=1, tmp_bool_cutouts:bool=False, batchsize:int=64):
     if args["problem"] == "allin1":

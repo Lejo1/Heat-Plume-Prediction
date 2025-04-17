@@ -111,7 +111,9 @@ def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datap
             if args["problem"] == "extend":
                 y_out = infer_nopad(model, x, y, params, overlap=True, device=args["device"])
             else:
-                y_out = model.infer(x.unsqueeze(0), args["device"])
+                model.eval()
+                model.to(args["device"])
+                y_out = model(x.unsqueeze(0).to(args["device"]))
 
             x, y, y_out = reverse_norm_one_dp(x, y, y_out, norm)
             dict_to_plot = prepare_data_to_plot(x, y, y_out, info) # TODO vorher: y[0], y_out[0]

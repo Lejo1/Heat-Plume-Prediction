@@ -13,30 +13,18 @@ from postprocessing.visualization import visualizations
 from postprocessing.measurements import measure_losses_paper24
 from utils.utils_args import save_yaml
 from processing.losses import CombiLoss
+from neuralop.models import TFNO, FNO
 
 def train(args: dict):
     np.random.seed(1)
     torch.manual_seed(1)
     multiprocessing.set_start_method("spawn", force=True)
 
-    tmp_bool_cutouts = True
-    input_channels, output_channels, dataloaders = init_data(args, tmp_bool_cutouts=tmp_bool_cutouts)
-    if output_channels == 1:
-        vT_case = "temperature"
-    elif output_channels == 2:
-        vT_case = "velocities"
+    tmp_bool_cutouts = False
+    input_channels, output_channels, dataloaders = init_data(args, tmp_bool_cutouts=tmp_bool_cutouts, batchsize=2)
 
     # model
-    if args["problem"] in ["1hp", "2stages", "test"]:
-        model = UNet(in_channels=input_channels).float()
-    elif args["problem"] in ["extend"]:
-        model = UNetHalfPad2(in_channels=input_channels).float()
-    elif args["problem"] in ["allin1"]:
-        if vT_case == "temperature":
-            kernel_size = 4 # best setting from optimization with optuna
-        elif vT_case == "velocities":
-            kernel_size = 5 # best setting from optimization with optuna
-        model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=4, init_features=32, kernel_size=kernel_size).float() # best setting from optimization with optuna
+    model = FNO(n_modes=(64,64), hidden_channels=40, n_layers=8, in_channels=input_channels, out_channels=output_channels)
     model.to(args["device"])
     
     if args["case"] in ["test", "finetune"]:
@@ -45,11 +33,8 @@ def train(args: dict):
         model.eval()
 
     if args["case"] in ["train", "finetune"]:
-        # if vT_case == "temperature":
-        #     loss = L1Loss()
-        # elif vT_case == "velocities":
-        loss = CombiLoss(0.75) # MSELoss() # best setting from optimization with optuna
-        solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"))
+        loss = MSELoss() 
+        solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), optimizer_switch=True)
         training_time = datetime.now()
         try:
             solver.load_lr_schedule(args["destination"] / "learning_rate_history.csv")
@@ -60,19 +45,12 @@ def train(args: dict):
             solver.save_lr_schedule(args["destination"] / "learning_rate_history.csv")
             print("Training finished")
 
-        # save model and train metrics
         training_time = datetime.now() - training_time
-        model.save(args["destination"])
-        solver.save_metrics_to_overall_csv(args["destination"], model.num_of_params(), args["epochs"], training_time, args["device"])
-        solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time, args["device"])
-
-    # postprocessing
-    # save_all_measurements(args, len(dataloaders["val"].dataset), times={}, solver=solver) #, errors)
-    measure_losses_paper24(model, dataloaders, args, vT_case=vT_case, tmp_bool_cutouts=tmp_bool_cutouts)
+        torch.save(model.state_dict(), args["destination"] / "fno_model.pt")
 
     if tmp_bool_cutouts:
         dataloaders = load_all_datasets_in_full(args)
-    for case in ["train", "val", "test"]:
+    for case in ["train"]: #, "val", "test"]:
         visualizations(model, dataloaders[case], args, plot_path=args["destination"] / case, amount_datapoints_to_visu=1, pic_format="png")
 
     return model
