@@ -36,7 +36,7 @@ Instead of using the discretized permeability and pressure fields as input (2x16
 
 ## 1. step: Heat pump specific temperature field
 
-A new network is introduced to model the temperature at any position $\vec{x}\mathbb{R}^2$ in the domain as
+A new network is introduced to model the temperature at any position $\vec{x} \in \mathbb{R}^2$ in the domain as
 
 $$
 T(\vec{x}, Q, T_{inj}, \dots) : \mathbb{R}^n \mapsto \mathbb{R},
@@ -115,3 +115,4 @@ Some tricks might be necessary to get stable local distortions, such as:
 - low distortion in the early stages of training
 - handcrafted weight initialization
 - loss with weight of a datapoint depending on the distance from the heat pump to avoid error accumulation
+
