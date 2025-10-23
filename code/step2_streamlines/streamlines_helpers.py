@@ -52,7 +52,6 @@ def build_new_info(info:dict, info_vx:dict, info_vy:dict):
 # data processing + streamline calculation
 def integrate_velocity(x, y, vx, vy, randomK_data:bool=False):
         if randomK_data:
-            exit()
             fx = RegularGridInterpolator((x,y), vx, bounds_error=False, fill_value=None, method="linear")
             fy = RegularGridInterpolator((x,y), vy, bounds_error=False, fill_value=None, method="linear")
         else:
