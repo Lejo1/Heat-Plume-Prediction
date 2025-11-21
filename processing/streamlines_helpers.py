@@ -123,9 +123,15 @@ def extract_required_data(dataset_name, runid, problem):
     return inputs_normed, label_normed, args, info, mat_ids, vx_real, vy_real, dims, indices
 
 # data processing + streamline calculation
-def integrate_velocity(x, y, vx, vy):
-        fx = RegularGridInterpolator((x,y), vx, bounds_error=False, fill_value=None, method="linear")
-        fy = RegularGridInterpolator((x,y), vy, bounds_error=False, fill_value=None, method="linear")
+def integrate_velocity(x, y, vx, vy, dummy_data:bool=False):
+        if dummy_data:
+            print("Dummy data")
+            # exit()
+            fx = RegularGridInterpolator((x,y), vx, bounds_error=False, fill_value=None, method="linear")
+            fy = RegularGridInterpolator((x,y), vy, bounds_error=False, fill_value=None, method="linear")
+        else:
+            fy = RegularGridInterpolator((x,y), vx, bounds_error=False, fill_value=None, method="linear")
+            fx = RegularGridInterpolator((x,y), vy, bounds_error=False, fill_value=None, method="linear")
 
         # define the velocity function to be integrated:
         def f(t, y):
@@ -133,10 +139,9 @@ def integrate_velocity(x, y, vx, vy):
 
         return f
 
-def calc_streamline(interpolator, maxs_xy, start=[5,14], t_end=27.5, t_steps=1000):
-    
+def calc_streamline(interpolator, maxs_xy, start=[5,14], t_end=27.5, t_steps=1000, **kwargs):
     # Solve for start point
-    sol = solve_ivp(interpolator, [0, t_end], start, t_eval=np.linspace(0,t_end,t_steps), method="Radau")
+    sol = solve_ivp(interpolator, [0, t_end], start, t_eval=np.linspace(0,t_end,t_steps), **kwargs)
 
     sol_x = sol.y[0]
     sol_y = sol.y[1]
@@ -154,40 +159,76 @@ def calc_streamline(interpolator, maxs_xy, start=[5,14], t_end=27.5, t_steps=100
     
     return sol_x, sol_y, t
 
-def draw_streamlines(image_data:np.array, streamlines:list, faded:bool=False):
+def draw_streamlines(image_data:np.array, streamlines:list, faded:bool=False, t_end:float=27.5):
     time = datetime.now()
     for streamline in streamlines:
-        if faded:
-            val = streamline[2][::-1]
-            val = val / val.max()
+        if faded and len(streamline[2]) > 0:
+            # TODO why happen that streamline of length=0?
+            val = (t_end - streamline[2]) / t_end
         else:
             val = 1
-        # if np.sum(streamline[0] < 0) > 0 or np.sum(streamline[1] < 0) > 0:
-        image_data[((streamline[0]+0.5).astype(int),(streamline[1]+0.5).astype(int))] = val # TODO rm? cell-center offset, because earlier already in there??
+        image_data[((streamline[0]+0.5).astype(int),(streamline[1]+0.5).astype(int))] = np.maximum(image_data[((streamline[0]+0.5).astype(int),(streamline[1]+0.5).astype(int))], val) # cell-center offset
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
-def make_streamlines(mat_ids, vx, vy, dims, offset:str=None):
-    pos_hps = np.array(np.where(mat_ids == 2)).T.astype(float)
-    print("Number of heat pumps: ", pos_hps.shape[0])
-    pos_hps += np.array([0.5,0.5]) # cell-center offset
+def draw_streamlines_gauss(field_max, field_mean, streamlines:list, n_streams_per_hp, faded:bool=False, t_end:float=27.5):
+    time = datetime.now()
+    for i in range(0, len(streamlines), n_streams_per_hp):
+        dataslice = streamlines[i:i+n_streams_per_hp]
+        local_mean = np.zeros(field_mean.shape)
+
+        for streamline in dataslice:
+            if faded and len(streamline[2]) > 0:
+                val = (t_end - streamline[2]) / t_end
+            else:
+                val = 1
+            
+            field_max[((streamline[0]+0.5).astype(int),(streamline[1]+0.5).astype(int))] = np.maximum(field_max[((streamline[0]+0.5).astype(int),(streamline[1]+0.5).astype(int))], val) # +0.5 := cell-center offset
+            local_mean[((streamline[0]+0.5).astype(int),(streamline[1]+0.5).astype(int))] += 1/len(dataslice)
+        
+        field_mean = np.maximum(field_mean, local_mean)
+
+    # rescale t0 (0,1)
+    field_mean_min = np.min(field_mean)
+    field_mean_max = np.max(field_mean)
+    field_mean = (field_mean - field_mean_min) / (field_mean_max - field_mean_min)
+
+    print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
+    return field_max, field_mean
+
+def make_streamlines(mat_ids, vx, vy, dims, offset:str=None, dummy_data:bool=False, **kwargs):
     resolution = 5
-    if offset != None:
-        pos_hps += np.array([0,offset])
     x,y = (np.arange(0,dims[0]),np.arange(0,dims[1]))
 
+    pos_hps = np.array(np.where(mat_ids == 2)).T.astype(float)
+    # pos_hps += np.array([0.5,0.5]) # cell-center offset
+    
+    n_streamlines_per_hp = 50
+    if offset == "gauss":
+        gauss_pos_hps = []
+        for hp in pos_hps:
+            hp_i_gauss = gaussian_distribution(center=hp, stddev=[5,5], num_points=n_streamlines_per_hp, x_min=[hp[0],0], x_max=[hp[0],dims[0]])
+            gauss_pos_hps.append(hp_i_gauss.T)
+        gauss_pos_hps = np.array(gauss_pos_hps)
+        pos_hps = gauss_pos_hps.reshape(-1,2)
+    elif offset != None:
+        pos_hps += np.array([0,offset])
+    
     time = datetime.now()
     streamlines = []
-    integrator = integrate_velocity(x, y, vx/resolution, vy/resolution)
+    integrator = integrate_velocity(x, y, vx/resolution, vy/resolution, dummy_data=dummy_data)
+    t_end = 27.5
     for hp in tqdm(pos_hps, desc="Calculating streamlines"):
-        sol = calc_streamline(integrator, (x.max(),y.max()), hp, t_end=27.5, t_steps=10_000)
+        sol = calc_streamline(integrator, (x.max(),y.max()), np.array(hp).T, t_end=t_end, t_steps=10_000, **kwargs)
         streamlines.append(sol)
     print("Time for calculating streamlines: ", datetime.now()-time, " seconds")
+    if offset != "gauss":
+        streamlines_drawn = draw_streamlines(np.zeros(dims), streamlines, faded=True, t_end=t_end)
+        return torch.tensor(streamlines_drawn)
+    else:
+        streamlines_drawn_0, streamlines_drawn_1 = draw_streamlines_gauss(np.zeros(dims), np.zeros(dims), streamlines, n_streams_per_hp=n_streamlines_per_hp, faded=True, t_end=t_end) 
+        return torch.tensor(streamlines_drawn_0), torch.tensor(streamlines_drawn_1)
 
-    streamlines_ohe = draw_streamlines(np.zeros(dims), streamlines, faded=False)
-    streamlines_faded = draw_streamlines(np.zeros(dims), streamlines, faded=True)
-
-    return torch.tensor(streamlines_ohe), torch.tensor(streamlines_faded)
 
 # save new data
 def save_new_datapoint(destination, runid:str, inputs_new:torch.Tensor, labels_new:torch.Tensor=None):
@@ -211,3 +252,13 @@ def correct_args_info(destination:pathlib.Path, v_info_path:pathlib.Path=None, b
     else:
         build_new_args(args)
     save_yaml(args, destination / "args.yaml")
+
+def gaussian_distribution(center:list, stddev:list, num_points:int, x_min:list, x_max:list):
+    # return x values distributed according to a Gaussian centered at 'center' with standard deviation 'stddev'
+    samples = []
+    for i in range(len(center)):
+        x_values = np.linspace(x_min[i], x_max[i], 1000)
+        gaussian = np.exp(-0.5 * ((x_values - center[i]) / stddev[i]) ** 2)
+        gaussian /= np.sum(gaussian)  # Normalize to create a probability distribution
+        samples.append(np.random.choice(x_values, size=num_points, p=gaussian/np.sum(gaussian)))
+    return np.array(samples)

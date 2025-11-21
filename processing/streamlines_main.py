@@ -4,32 +4,37 @@ import time
 from processing.networks.unetVariants import UNetNoPad2
 from processing.streamlines_helpers import *
 
-def build_streamlines(model_name:str, dataset_name:str="dataset_giant_100hp_varyK", based_on_pred:bool=True):
+def build_streamlines(model_path:str=None, dataset_name:str="dataset_giant_100hp_varyK", based_on_pred:bool=True, model=None, data_dir=pathlib.Path("/scratch/sgs/pelzerja/datasets_prepared/allin1"), offset:str = None, **kwargs):
     ## copy ixydk files (later overwrite xyd)
     if based_on_pred:
-        model_path = pathlib.Path(f"/home/pelzerja/pelzerja/test_nn/1HP_NN/runs/allin1/{model_name}")
-    data_dir = pathlib.Path("/scratch/sgs/pelzerja/datasets_prepared/allin1")
+        model_path = pathlib.Path(model_path) #f"/scratch/sgs/pelzerja/runs/allin1/{model_name}")
     origin_data_T_inout = "inputs_ixyk outputs_t for_s" # base, replace xy, add s,s_outer
     origin_data_T = data_dir/f"{dataset_name} {origin_data_T_inout}"
     origin_data_v = data_dir/f"{dataset_name} inputs_pki outputs_xy"
     destination_data_T_inout = "inputs_ixydk+s_outer outputs_t"
     if based_on_pred:
-            destination = data_dir/f"{dataset_name} {destination_data_T_inout} prep_with_{model_path.name}"
+            destination = data_dir/f"{dataset_name} {destination_data_T_inout} prep_with_{model_path.name}" # {method}"
     else:
-        destination = data_dir/f"{dataset_name} {destination_data_T_inout}" #/ds statt dataset_name
+        destination = data_dir/f"{dataset_name} {destination_data_T_inout}" 
     copytree(origin_data_T,destination, dirs_exist_ok=True)
 
     idx = {"vx": 1,
             "vy" : 2,
             "sf" : 3,
-            "sf_outers" : 5}
+            "sf_outers" : 5,
+            }
 
     if based_on_pred:
-        # load model
+        # load model if not given
         info_v = load_yaml(model_path / "info.yaml")
-        settings_model = load_yaml(model_path / "settings.yaml")
-        model = UNetNoPad2(in_channels=len(settings_model["inputs"]), out_channels=2, kernel_size=settings_model["kernel_size"], depth=settings_model["depth"], init_features=settings_model["init_features"])
-        model.load(model_path)
+        if model is None:
+            try: 
+                settings_model = load_yaml(model_path / "HPS_options.yaml") 
+                model = UNetNoPad2(in_channels=len(settings_model["inputs"]["values"][0]), out_channels=2, kernel_size=settings_model["kernel_size"]["values"][0], depth=settings_model["depth"]["values"][0], init_features=settings_model["init_features"]["values"][0], stride=settings_model["stride"]["values"][0], dilation=settings_model["dilation"]["values"][0], activation=settings_model["activation_fct"]["values"][0], norm=settings_model["norm"]["values"][0], repeat_inner=settings_model["repeat_inner"]["values"][0])
+            except: # old
+                settings_model = load_yaml(model_path / "settings.yaml")
+                model = UNetNoPad2(in_channels=len(settings_model["inputs"]), out_channels=2, kernel_size=settings_model["kernel_size"], depth=settings_model["depth"], init_features=settings_model["init_features"])
+            model.load(model_path)
         model.eval()
     else:
         info_v = load_yaml(origin_data_v / "info.yaml")
@@ -45,10 +50,13 @@ def build_streamlines(model_name:str, dataset_name:str="dataset_giant_100hp_vary
 
     for runid in (destination / "Inputs").iterdir():
         runid = runid.name
+    # for runid in ["RUN_2.pt"]:
         start_time = time.time()
         if based_on_pred:
             data_in_model = torch.load(origin_data_v/"Inputs"/runid)
+            data_in_model = data_in_model.swapaxes(1,2) # if model needs H,W swaped (old)
             vv = model(data_in_model.unsqueeze(0)).detach().squeeze(0)
+            vv = vv.swapaxes(1,2) # if model needs H,W swaped (old)
         else:
             vv = torch.load(origin_data_v/"Labels"/runid)
         norm_v.reverse(vv, "Labels")
@@ -66,21 +74,28 @@ def build_streamlines(model_name:str, dataset_name:str="dataset_giant_100hp_vary
         inputs_reduced[idx["vy"]] = vv[1]
         inputs_reduced = inputs_reduced.numpy()
 
+        dummy_dataset = False #True # vs. realK dataset, because main-direction of flow is switched
         # make streamlines
-        _, streamlines_faded = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape)
-
-        _, streamlines_faded_top = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, offset=10)
-        _, streamlines_faded_bottom = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, offset=-10)
-
+        if offset != "gauss":
+            streamlines_faded = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, dummy_data=dummy_dataset, **kwargs)
+            streamlines_faded_top = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, dummy_data=dummy_dataset, offset=10)
+            streamlines_faded_bottom = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, dummy_data=dummy_dataset, offset=-10)
+        else:
+            # return streamlines_faded
+            streamlines_gauss = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, dummy_data=dummy_dataset, offset="gauss")
         # norm inputs acc. to info
         inputs_normed = norm_after(torch.tensor(inputs_reduced), "Inputs")
-        inputs_normed[idx["sf"]] = streamlines_faded.unsqueeze(0)
-        inputs_normed[idx["sf_outers"]] = streamlines_faded_top.unsqueeze(0) + streamlines_faded_bottom.unsqueeze(0)
+        if offset != "gauss":
+            inputs_normed[idx["sf"]] = streamlines_faded.unsqueeze(0)
+            inputs_normed[idx["sf_outers"]] = np.maximum(streamlines_faded_top.unsqueeze(0), streamlines_faded_bottom.unsqueeze(0))
+        # inputs_normed[idx["sf_outers"]] = torch.max(streamlines_faded_top.unsqueeze(0), streamlines_faded_bottom.unsqueeze(0))
+        else:
+            inputs_normed[idx["sf"]] = streamlines_gauss[0].unsqueeze(0)
+            inputs_normed[idx["sf_outers"]] = streamlines_gauss[1].unsqueeze(0)
         print("new: ", inputs_normed.shape)
 
         save_new_datapoint(destination, runid, inputs_normed)
         print(f"Finished {runid} after {time.time()-start_time} seconds")
-
 
 if __name__ == "__main__":
     dataset_name = "dataset_giant_100hp_varyK"
