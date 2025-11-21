@@ -38,7 +38,7 @@ def preprocessing(args:dict):
     print(f"Dataset prepared: {args['data_prep']}")
 
     if args["case"] == "train": # TODO also finetune?
-        ua.save_yaml(info, args["model"]/"info.yaml")
+        ua.save_yaml(info, args["destination"]/"info.yaml")
 
 # def preprocessing_allin1(args: dict):
 #     args_domain_with_1hpnn_params = deepcopy(args)

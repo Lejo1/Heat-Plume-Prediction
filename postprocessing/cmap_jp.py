@@ -18,12 +18,17 @@ def new_cmap(colors, nodes, name:str=None):
 
 # shifted hot colormap to better capture details
 name = "jp_temperature"
-colors = ["white", "blue", "darkred", "orange", "white"]
+colors = ["white", "darkblue", "darkred", "orange", "white"]
 nodes = np.array([10.6, 11.7, 12., 13.5, 15.6])
 new_cmap(colors, nodes, name)
 
 # shifted hot colormap to better capture details
 name = "jp_linear"
-colors = ["white", "blue", "darkred", "orange", "white"]
+colors = ["white", "darkblue", "darkred", "orange", "white"]
 nodes = np.array([0., 1., 2., 3., 4.])
 new_cmap(colors, nodes, name)
+
+## hex-codes
+# darkblue : "#00008B"
+# darkred : "#8B0000"
+# orange   : "#FFA500" 

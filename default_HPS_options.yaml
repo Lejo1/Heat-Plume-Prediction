@@ -46,6 +46,10 @@ repeat_inner:
   values:
   - True
   - False
+optimizer_switch:
+  values:
+  - True
+  - False
 skip_per_dir:
   values:
   - 64
@@ -72,3 +76,9 @@ bool_cutouts:
   values:
   - True
   - False
+lr:
+  values:
+  - 1e-3
+  - 5e-4
+  - 1e-4
+  - 5e-5

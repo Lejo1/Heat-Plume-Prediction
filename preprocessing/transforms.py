@@ -14,12 +14,12 @@ from torch import linalg, nonzero, unsqueeze
 
 
 class NormalizeTransform:
-    def __init__(self,info:dict,out_range = (0,1)):
+    def __init__(self, info: dict, out_range: Tuple[float, float] = (0, 1)):
         self.info = info
         self.out_min, self.out_max = out_range 
 
-    def __call__(self,data, type = "Inputs"):
-        for prop, stats in self.info[type].items():
+    def __call__(self,data, data_type = "Inputs"):
+        for prop, stats in self.info[data_type].items():
             index = stats["index"]
             if index < data.shape[0]:
                 self.__apply_norm(data,index,stats)
@@ -27,8 +27,8 @@ class NormalizeTransform:
                 logging.warning(f"Index {index} might be in training data but not in this dataset")
         return data
     
-    def reverse(self,data,type = "Labels"):
-        for prop, stats in self.info[type].items():
+    def reverse(self,data,data_type = "Labels"):
+        for prop, stats in self.info[data_type].items():
             index = stats["index"]
             self.__reverse_norm(data,index,stats)
         return data
@@ -41,7 +41,7 @@ class NormalizeTransform:
             data[index] = (data[index] - stats["min"]) / delta * (self.out_max - self.out_min) + self.out_min
         
         if norm == "LogRescale":
-            data[index] = np.log(data[index] - stats["min"] + 1)
+            data[index] = torch.log(data[index] - stats["min"] + 1)
             rescale()
         elif norm == "Rescale":
             rescale()
@@ -63,7 +63,7 @@ class NormalizeTransform:
 
         if norm == "LogRescale":
             rescale()
-            data[index] = np.exp(data[index]) + stats["min"] - 1
+            data[index] = torch.exp(data[index]) + stats["min"] - 1
         elif norm == "Rescale":
             rescale()
         elif norm == "Standardize":
@@ -332,7 +332,6 @@ class ReduceTo2DTransform:
             "Reduced data to 2D, but still has dummy dimension 0 for Normalization to work")
         return data
 
-
 class ComposeTransform:
     """Transform class that combines multiple other transforms into one"""
 
@@ -358,7 +357,21 @@ class ComposeTransform:
                 pass
         return data
 
+class TransposeTransform:
+    """Transform class to transpose the data"""
 
+    def __init__(self):
+        pass
+
+    def __call__(self, data: dict):
+        logging.info("Start TransposeTransform")
+        for prop in data.keys():
+            if len(data[prop].shape) == 3:
+                data[prop] = data[prop].transpose(0, 1)
+            else:
+                raise ValueError(f"TransposeTransform: Data shape {data[prop].shape} not supported")
+            
+        return data
 class ToTensorTransform:
     """Transform class to convert dict of tensors to one tensor"""
 
@@ -377,21 +390,18 @@ class ToTensorTransform:
         return result
 
 
-def get_transforms(reduce_to_2D: bool = True, reduce_to_2D_xy: bool = True, power2trafo: bool = False, problem:str="2stages"):
+def get_transforms(reduce_to_2D: bool = True, reduce_to_2D_xy: bool = True, power2trafo: bool = False, problem:str="2stages", old_model: bool = False) -> ComposeTransform:
     transforms_list = []
 
     if reduce_to_2D:
-        transforms_list.append(ReduceTo2DTransform(
-            reduce_to_2D_xy=reduce_to_2D_xy))
-    if power2trafo:
+        transforms_list.append(ReduceTo2DTransform(reduce_to_2D_xy=reduce_to_2D_xy))
+    if power2trafo or problem in ["1hp"]:
         transforms_list.append(PowerOfTwoTransform())
     transforms_list.append(SignedDistanceTransform())
     if problem in ["extend1", "extend2"]:
         transforms_list.append(PositionalEncodingTransform())
-    elif problem == "allin1":
-        transforms_list.append(MultiHPDistanceTransform())
-        transforms_list.append(LinearSmearTransform())
-
+    if old_model:
+        transforms_list.append(TransposeTransform())
     transforms = ComposeTransform(transforms_list)
     return transforms
 

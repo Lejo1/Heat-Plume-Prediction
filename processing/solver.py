@@ -4,7 +4,9 @@ import pathlib
 import time
 from dataclasses import dataclass
 import wandb
+import optuna
 
+from math import isnan
 from torch import manual_seed
 from torch.nn import Module, modules, MSELoss, L1Loss, HuberLoss, SmoothL1Loss
 from torch.optim import Adam, Optimizer, lr_scheduler, LBFGS
@@ -42,22 +44,26 @@ class Solver(object):
         if not self.finetune:
             self.model.apply(weights_init)
         
-        self.metrics: dict = {"MSE": MSELoss(), "MAE": L1Loss(), "Linf": LinfLoss(), "Huber": HuberLoss(), "KLD": KLD_log(), "SmoothL1": SmoothL1Loss(), "SSIM": SSIMLoss(), "MAPE": MAPE(), "IoU": IoULoss()} #, "X-MSE": None, "Y-MSE": None}
+        self.metrics: dict = {"Huber": HuberLoss(), "MSE": MSELoss(), "MAE": L1Loss()} #, "Linf": LinfLoss(), "KLD": KLD_log(), "SmoothL1": SmoothL1Loss(), "SSIM": SSIMLoss(), "MAPE": MAPE(), "IoU": IoULoss()} #, "X-MSE": None, "Y-MSE": None}
 
-    def train(self, args: dict):
-        manual_seed(0)
+    def train(self, args: dict, optuna_trial=None):
+        # manual_seed(0)
         start_time = time.perf_counter()
         # initialize tensorboard
-        writer = SummaryWriter(args["destination"])
+        if optuna_trial:
+            log_dir = args["destination"] / f"trial{optuna_trial.number}"
+            pathlib.Path(log_dir).mkdir(parents=True, exist_ok=True)
+        else:
+            log_dir = args["destination"]
+        writer = SummaryWriter(log_dir)
         device = args["device"]
-        # writer.add_graph(self.model, next(iter(self.train_dataloader))[0].to(device))
 
         # if optimizer_switch is True, switch to LBFGS optimizer after 90% of epochs
         self.epoch_switch_optimizer = args["epochs"] + 1
         if self.optimizer_switch:
             self.epoch_switch_optimizer = int(0.9 * self.epoch_switch_optimizer)
 
-        epochs = tqdm(range(args["epochs"]), desc="epochs", disable=False)
+        epochs = tqdm(range(args["epochs"]), desc="epochs", disable=True)
         for epoch in epochs:
             try:
                 if epoch == self.epoch_switch_optimizer:
@@ -71,30 +77,21 @@ class Solver(object):
                     
                 # Training
                 self.model.train()
-                train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device)
+                train_epoch_loss, _ = self.run_epoch(self.train_dataloader, device) #, other_losses_train
 
                 # Validation
-                # if epoch % 10 == 0:
                 self.model.eval()
-                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
-
-                try:
-                    wandb.log({"train-loss": train_epoch_loss}, step=epoch)
-                    wandb.log({"val-loss": val_epoch_loss}, step=epoch)
-                    wandb.log({"val": other_losses_val}, step=epoch)
-                    wandb.log({"lr": self.opt.param_groups[0]["lr"]}, step=epoch)
-                except Exception as e:
-                    logging.error(f"Could not log to wandb: {e}")
-
-                # if epoch % 10 == 0:
-                for metric_name, metric_value in other_losses_val.items():
-                    writer.add_scalar(f"val {metric_name}", metric_value, epoch)
-                for metric_name, metric_value in other_losses_train.items():
-                        writer.add_scalar(f"train {metric_name}", metric_value, epoch)
+                # _, other_losses_val = self.run_epoch(self.val_dataloader, device)
+                # val_epoch_loss = other_losses_val["Huber"] # TODO change back? currently for realK
+                val_epoch_loss, _ = self.run_epoch(self.val_dataloader, device) #TODO used for randomK
 
                 # Logging
                 writer.add_scalar("train_loss", train_epoch_loss, epoch)
                 writer.add_scalar("val_loss", val_epoch_loss, epoch)
+                # for metric_name, metric_value in other_losses_train.items():
+                #     writer.add_scalar(f"train_{metric_name}", metric_value, epoch)
+                # for metric_name, metric_value in other_losses_val.items():
+                #     writer.add_scalar(f"val_{metric_name}", metric_value, epoch)
                 writer.add_scalar("learning_rate", self.opt.param_groups[0]["lr"], epoch)
                 epochs.set_postfix_str(f"train loss: {train_epoch_loss:.2e}, val loss: {val_epoch_loss:.2e}, lr: {self.opt.param_groups[0]['lr']:.1e}")
                 
@@ -104,25 +101,30 @@ class Solver(object):
                         "epoch": epoch,
                         "loss": val_epoch_loss,
                         "train loss": train_epoch_loss,
-                        # "val RMSE": val_epoch_loss**0.5, # TODO only true if loss_func == MSELoss()
-                        # "train RMSE": train_epoch_loss**0.5, #TODO only true if loss_func == MSELoss()
                         "state_dict": self.model.state_dict(),
                         "optimizer": self.opt.state_dict(),
                         "parameters": self.model.parameters(),
                         "training time in sec": (time.perf_counter() - start_time),
                     }
                     if False:
-                        self.model.save(args["destination"], model_name=f"best_model_e{epoch}.pt")
+                        self.model.save(log_dir, model_name=f"best_model_e{epoch}.pt")
 
                 # self.lr_scheduler.step(val_epoch_loss)
+
+                if optuna_trial:
+                    optuna_trial.report(val_epoch_loss, epoch)
+
+                    # # Handle pruning based on the intermediate value.
+                    # if optuna_trial.should_prune():
+                    #     raise optuna.exceptions.TrialPruned()
 
             except KeyboardInterrupt:
                 try:
                     model_tmp = deepcopy(self.model)
                     model_tmp.load_state_dict(self.best_model_params["state_dict"])
                     model_tmp.to(args["device"])
-                    model_tmp.save(args["destination"], model_name=f"interim_model_e{epoch}.pt")
-                    visualizations(model_tmp, self.val_dataloader, args, plot_path=args["destination"] / f"plot_val_interim_e{epoch}", amount_datapoints_to_visu=2, pic_format="png")
+                    model_tmp.save(log_dir, model_name=f"interim_model_e{epoch}.pt")
+                    visualizations(model_tmp, self.val_dataloader, args, plot_path=log_dir / f"plot_val_interim_e{epoch}", amount_datapoints_to_visu=2, pic_format="png")
                 except Exception as e:
                     logging.error(e)
                     
@@ -139,6 +141,8 @@ class Solver(object):
         self.model.load_state_dict(self.best_model_params["state_dict"]) #self.model = 
         self.opt.load_state_dict(self.best_model_params["optimizer"]) #self.opt =
         print(f"Best model was found in epoch {self.best_model_params['epoch']}.")
+
+        return self.best_model_params["loss"]
 
     def run_epoch(self, dataloader: DataLoader, device: str):
         epoch_loss = 0.0
@@ -193,7 +197,7 @@ class Solver(object):
                     metric_values[metric_name] = metric(y_pred.cpu(), y_reduced.cpu())
                     # necessary exception for MAPE (some error in the function requires to put all to cpu) # necessary exception for SSIM, because it requires to detach before calculating this loss
             
-        return epoch_loss, metric_values
+        return epoch_loss, metric_values #None #, 
 
     def save_lr_schedule(self, path: str):
         """ save learning rate history to csv file"""
@@ -220,8 +224,8 @@ class Solver(object):
         # prepare data as dict
 
         self.model.eval()
-        train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device)
-        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+        train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device) #other_losses_train
+        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device) #other_losses_val
 
         metrics = {}
         metrics["no_params"] = no_params
@@ -229,9 +233,9 @@ class Solver(object):
         metrics["training_time [s]"] = training_time
         metrics["best_epoch"] = self.best_model_params["epoch"]
         metrics["train"] = other_losses_train
-        metrics["train"]["train loss"] = train_epoch_loss
+        metrics["train loss"] = train_epoch_loss #["train"]
         metrics["val"] = other_losses_val
-        metrics["val"]["val loss"] = val_epoch_loss
+        metrics["val loss"] = val_epoch_loss #["val"]
 
         # save data as yaml
         save_yaml(metrics, destination / "measurements.yaml")
@@ -261,36 +265,3 @@ class Solver(object):
                
         csv_writer.writerow(row)
         csv_file.close()
-
-    def get_metrics_wandb(self, model: Module, dataloaders: dict, args: dict, training_time: float, vT_case: str = "vT"):
-        """ get metrics for wandb """
-        self.model.eval()
-        metrics = {}
-        for case, dataloader in dataloaders.items():
-            if case in ["train", "test"]:
-                continue
-            for x, y in dataloader:
-                x = x.to(args["device"])
-                y = y.to(args["device"])
-
-                y_pred = model(x)
-                required_size = y_pred.shape[2:]
-                start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
-                y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
-                # Calculate metrics
-                if vT_case == "velocities":
-                    metrics[f"{case} X-MSE"] = MSELoss()(y_pred[:, 0, :, :], y_reduced[:, 0, :, :]).detach().item()
-                    metrics[f"{case} Y-MSE"] = MSELoss()(y_pred[:, 1, :, :], y_reduced[:, 1, :, :]).detach().item()
-                for name, metric in self.metrics.items():
-                    if name == "X-MSE" or name == "Y-MSE":
-                        continue
-                    try:
-                        metrics[f"{case} {name}"] = metric(y_pred, y_reduced).detach().item()
-                    except:
-                        metrics[f"{case} {name}"] = metric(y_pred.cpu(), y_reduced.cpu())
-                metrics[f"{case} RMSE"] = MSELoss()(y_pred, y_reduced).detach().item()**0.5
-            metrics["No. params"] = self.model.num_of_params()
-            metrics["Best epoch"] = self.best_model_params["epoch"]
-            metrics["Training time in s"] = training_time
-
-        return metrics

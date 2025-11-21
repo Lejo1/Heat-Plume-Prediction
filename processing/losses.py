@@ -1,5 +1,5 @@
 import torch.nn as nn
-from torch import manual_seed, Tensor, log, max, abs
+from torch import manual_seed, Tensor, log, max, abs, zeros, sum
 from skimage.metrics import structural_similarity as ssim
 
 class KLD_log():
@@ -36,8 +36,8 @@ class SSIMLoss(nn.Module):
     def forward(self, predictions, labels):
         # assert predictions.max() <= self.max, f"Prediction values exceed max value with {predictions.max()}"
         # assert predictions.min() >= self.min, f"Prediction values are below min value with {predictions.min()}"
-        assert labels.max() <= self.max, f"Label values exceed max value with {labels.max()}"
-        assert labels.min() >= self.min, f"Label values are below min value with {labels.min()}"
+        # assert labels.max() <= self.max, f"Label values exceed max value with {labels.max()}"
+        # assert labels.min() >= self.min, f"Label values are below min value with {labels.min()}"
         
         num_channels = predictions.shape[1]
         ssim_total = 0
@@ -61,14 +61,44 @@ class IoULoss(nn.Module):
         super(IoULoss, self).__init__()
         # on binary mask of 0.9 threshold (values between 0 and 1)
         # TODO currently normalized data -> go to real data?
-        self.threshold = 0.9 # TODO find reasonable threshold
+        self.threshold = 0.5 # TODO find reasonable threshold
         self.epsilon = 1e-6 # to avoid division by zero
 
     def forward(self, output, label):
         output = output > self.threshold
         label = label > self.threshold
+        if len(output.shape) == 3:
+            output = output.unsqueeze(1)
+            label = label.unsqueeze(1)
         intersection = (output & label).float().sum((2, 3))
         union = (output | label).float().sum((2, 3))
         iou = (intersection + self.epsilon) / (union + self.epsilon)
-        print(f"iou: {iou.shape}, {iou}, {intersection.shape}, {union.shape}, {label.shape}")
         return iou.mean() # averaged over batch and channels
+    
+class PATLoss(nn.Module):
+    """
+    Percentage above Threshold, unit [%]
+
+    pat = torch.sum(torch.abs(y_pred[:,0] - y[:,0]) > pbt_thresholds[idx])
+    """
+
+    def __init__(self, pat_thresholds: list):
+        super(PATLoss, self).__init__()
+        self.pat_thresholds = pat_thresholds
+
+    def forward(self, output, label):
+        if len(output.shape) == 3:
+            output = output.unsqueeze(1)
+            label = label.unsqueeze(1)
+        pat = zeros((output.shape[0], len(self.pat_thresholds)), device=output.device)
+        for idx in range(output.shape[1]):
+            pat[:, idx] = sum(abs(output[:, idx] - label[:, idx]) > self.pat_thresholds[idx], dim=(1, 2)) / (output.shape[2] * output.shape[3])
+        return pat * 100
+    
+
+# class ConservationOfMass(nn.Module):
+#     ## CM (conservation of energy)-ish
+# # TODO does this make sense for velocities???
+# normalized_additional_energy1 =( np.sum(output[0]) - np.sum(label[0]))/np.sum(label[0])
+# normalized_additional_energy2 = (np.sum(output[1]) - np.sum(label[1]))/np.sum(label[1])
+# print("conservation vx", normalized_additional_energy1, "vy", normalized_additional_energy2, "best is 0, worst is inf")

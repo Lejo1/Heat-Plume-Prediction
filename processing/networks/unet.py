@@ -5,7 +5,7 @@ from processing.networks.model import Model
 
 
 class UNet(Model):
-    def __init__(self, in_channels=2, out_channels=1, init_features=32, depth=3, kernel_size=5):
+    def __init__(self, in_channels:int=2, out_channels:int=1, init_features:int=32, depth:int=3, kernel_size:int=5, **kwargs):
         super().__init__()
         self.features = init_features
         self.depth = depth

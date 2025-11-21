@@ -7,25 +7,28 @@ from preprocessing.datasets.dataset_1stbox import Dataset1stBox
 from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
 from preprocessing.datasets.dataset_extend import DatasetExtend, DatasetEncoder, random_split_extend
 
-ORDER_DATA = [0,2,1] # in RUN-ID labels this is [0,3,2]
-
-def init_data(args:dict, seed=1, tmp_bool_cutouts:bool=False, batchsize:int=64):
+def init_data(args:dict, seed=1, tmp_bool_cutouts:bool=False, batchsize:int=64, ORDER_DATA:list=[0,2,1]):
     if args["problem"] == "allin1":
+        print("order", ORDER_DATA)
         dataloaders = {}
         
         if not tmp_bool_cutouts or args["case"] == "test": # NO CUTOUTS
             dataset_train = DataPoint(args["data_prep"], i=ORDER_DATA[0])
         else: # DO CUTOUTS
-            dataset_train = SimulationDatasetCuts(args["data_prep"], skip_per_dir=args  ["skip_per_dir"], box_size=args["len_box"], ids=[ORDER_DATA[0],])
+            dataset_train = SimulationDatasetCuts(args["data_prep"], skip_per_dir=args["skip_per_dir"], box_size=args["len_box"], ids=ORDER_DATA[0])
         dataset_val = DataPoint(args["data_prep"], i=ORDER_DATA[1])
-        dataset_test = DataPoint(args["data_prep"], i=ORDER_DATA[2])
-            # dataset_val = SimulationDatasetCuts(args["data_prep"], skip_per_dir=args["skip_per_dir"], box_size=args["len_box"], idx=[0,])
-        datasets = [dataset_train, dataset_val, dataset_test]
+        datasets = [dataset_train, dataset_val]
 
         dataloaders["train"] = DataLoader(datasets[0], batch_size=batchsize, shuffle=True, num_workers=0)
         dataloaders["val"] = DataLoader(datasets[1], batch_size=batchsize, shuffle=True, num_workers=0)
-        dataloaders["test"] = DataLoader(datasets[2], batch_size=batchsize, shuffle=False, num_workers=0)
-        print(f"Length of datasets: {len(dataset_train)}:{len(dataset_val)}")
+        try:
+            dataset_test = DataPoint(args["data_prep"], i=ORDER_DATA[2])
+            # dataset_val = SimulationDatasetCuts(args["data_prep"], skip_per_dir=args["skip_per_dir"], box_size=args["len_box"], idx=[0,])
+            datasets.append(dataset_test)
+            dataloaders["test"] = DataLoader(datasets[2], batch_size=batchsize, shuffle=False, num_workers=0)
+        except:
+            pass
+        print(f"Length of datasets: {len(dataset_train)}:{len(dataset_val)}, with {datasets[0].input_channels} input channels and {datasets[0].output_channels} output channels")
 
         return datasets[0].input_channels, datasets[0].output_channels, dataloaders
         
@@ -55,7 +58,7 @@ def init_data(args:dict, seed=1, tmp_bool_cutouts:bool=False, batchsize:int=64):
         print(f"Length of dataset: {len(dataset)} - split into {len(datasets[0])}:{len(datasets[1])}:{len(datasets[2])}")
         return dataset.input_channels, dataset.output_channels, dataloaders
 
-def load_all_datasets_in_full(args: dict):
+def load_all_datasets_in_full(args: dict, ORDER_DATA: list = [0, 2, 1]):
     dataloaders = {}
     for i, case in zip(ORDER_DATA, ["train", "val", "test"]):
         if args["problem"] == "allin1":

@@ -1,6 +1,6 @@
 import pathlib
 import torch.nn as nn
-from torch import equal, load, save
+import torch
 
 class Model(nn.Module):
     def __init__(self):
@@ -8,15 +8,16 @@ class Model(nn.Module):
 
     def load(self, model_path:pathlib.Path, device:str = "cpu", model_name: str = "model.pt", **kwargs):
         location = "cuda:0" if "cuda" in device else "cpu"
-        self.load_state_dict(load(model_path/model_name, map_location=location, **kwargs))
+        self.load_state_dict(torch.load(model_path/model_name, map_location=location, **kwargs))
         self.to(device)
 
     def infer(self, data, device:str = "cpu"):
         self.eval()
+        torch.set_grad_enabled(False)  # Disable gradient computation for testing
         return self(data.to(device)).detach()
 
     def save(self, path:pathlib.Path, model_name: str = "model.pt"):
-        save(self.state_dict(), path/model_name)
+        torch.save(self.state_dict(), path/model_name)
 
         model_structure = []
         for name, param in self.named_parameters():
@@ -26,6 +27,16 @@ class Model(nn.Module):
     
     def num_of_params(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
+    def get_size_mb(self):
+        param_size = 0
+        for param in self.parameters():
+            param_size += param.nelement() * param.element_size()
+        buffer_size = 0
+        for buffer in self.buffers():
+            buffer_size += buffer.nelement() * buffer.element_size()
+        size_mb = (param_size + buffer_size) / (1024 * 1024)
+        return size_mb
 
     def compare(self, model_2):
         # source: https://discuss.pytorch.org/t/check-if-models-have-same-weights/4351/3
@@ -36,7 +47,7 @@ class Model(nn.Module):
             pass    
         models_differ = 0
         for key_item_1, key_item_2 in zip(self.state_dict().items(), model_2.items()):
-            if equal(key_item_1[1], key_item_2[1]):
+            if torch.equal(key_item_1[1], key_item_2[1]):
                 pass
             else:
                 models_differ += 1

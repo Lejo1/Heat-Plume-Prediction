@@ -8,11 +8,14 @@ import utils.utils_args as ut
 import preprocessing.preprocessing as prep
 from processing.training import train
 
-def read_cla(model_path:str):
-    clas = ut.load_yaml(model_path / "command_line_arguments.yaml")
+def read_cla(path:str):
+    clas = ut.load_yaml(path / "command_line_arguments.yaml")
     for path_typed_cla in ["data_prep", "data_raw", "destination", "model"]:
-        if clas[path_typed_cla] is not None:
-            clas[path_typed_cla] = Path(clas[path_typed_cla])
+        try:
+            if clas[path_typed_cla] is not None:
+                clas[path_typed_cla] = Path(clas[path_typed_cla])
+        except KeyError:
+            continue
 
     return clas
 
@@ -42,7 +45,7 @@ if __name__ == "__main__":
 
     cheat = True # read in cla.yaml as settings-file for training
     if cheat:
-        args["destination"] = Path(f"/scratch/sgs/pelzerja/runs/{args['problem']}") / args["destination"]
+        args["destination"] = Path(f"/scratch/sgs/pelzerja/runs/{args['problem']}") / args["destination"] #/sgs
         current_destination = args["destination"]
         args = read_cla(args["destination"])
         args["destination"] = current_destination # just to make sure that nothing is overwritten
@@ -58,7 +61,6 @@ if __name__ == "__main__":
     ut.save_yaml(args, args["destination"] / "command_line_arguments.yaml")
 
     # prepare data
-    prep.preprocessing(args) # and save info.yaml in model folder
     model = train(args)
 
     print("Done")

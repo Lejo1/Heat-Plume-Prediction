@@ -35,7 +35,6 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
     #     print("shape", additional_inputs.shape, "should be 4D?")
     #     exit()
 
-    transforms = get_transforms(problem=args["problem"])
     inputs = expand_property_names(args["inputs"])
     outputs = expand_property_names(args["outputs"])
     time_init = "   0 Time  0.00000E+00 y"
@@ -47,7 +46,8 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
         dims = np.array(pflotran_settings["grid"]["ncells"])
         cell_size = total_size/dims
         resolution = cell_size[0] # TODO if not all cells have the same size!
-        time_prediction = "   4 Time  2.75000E+01 y" 
+        time_prediction = "   4 Time  2.75000E+01 y"
+        old_data = True
     except: # new data (2025)
         pflotran_settings = load_yaml(args["data_raw"] / "settings.yaml")
         # resolution = np.array(pflotran_settings["grid"]["resolution"])
@@ -55,10 +55,13 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
         total_size = np.array([*pflotran_settings["grid"]["size [m]"], resolution])
         cell_size = resolution*np.ones(len(total_size))
         dims = (total_size/cell_size).astype(int)
+        old_data = False
     try:
         refined = pflotran_settings["grid"]["refinement"]
     except:
         refined = False
+
+    transforms = get_transforms(problem=args["problem"]) #, old_model=True) # only if apply old model to old data, not if newly trained on old data; TODO: also requires to invert data in x-dir
 
     if info is None: calc = WelfordStatistics()
     tensor_transform = ToTensorTransform()
@@ -68,8 +71,8 @@ def prepare_dataset(args:dict, info:dict = None, additional_inputs: torch.Tensor
         additional_inputs = [None]*total
     print_bool = True
     for data_path, run, additional_input in tqdm(zip(data_paths, runs, additional_inputs), desc="Converting", total=total):
-        x = load.load_data(data_path, time_init, inputs, dims, additional_input=additional_input, time_prediction=time_prediction, print_bool=print_bool, refined=refined, goal_resolution=resolution)
-        y = load.load_data(data_path, time_prediction, outputs, dims, time_prediction=time_prediction, print_bool=print_bool, refined=refined, goal_resolution=resolution)
+        x = load.load_data(data_path, time_init, inputs, dims, additional_input=additional_input, time_prediction=time_prediction, print_bool=print_bool, refined=refined, goal_resolution=resolution, old_data=old_data)
+        y = load.load_data(data_path, time_prediction, outputs, dims, time_prediction=time_prediction, print_bool=print_bool, refined=refined, goal_resolution=resolution, old_data=old_data)
         print_bool = False
         loc_hp = load.get_hp_location(x)
         x = transforms(x, loc_hp=loc_hp)

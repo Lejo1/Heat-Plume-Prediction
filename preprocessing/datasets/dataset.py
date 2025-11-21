@@ -55,7 +55,15 @@ class DatasetBasis(Dataset):
 class DataPoint(DatasetBasis):
     def __init__(self, path:str, i:int=0):
         DatasetBasis.__init__(self, path)
-        run_id = get_run_ids_from_prep(self.path / "Inputs")[i]
-        
-        self.input_names = [f"RUN_{run_id}.pt"]
-        self.label_names = [f"RUN_{run_id}.pt"]
+        if isinstance(i, int):
+            run_id = get_run_ids_from_prep(self.path / "Inputs")[i]
+            
+            self.input_names = [f"RUN_{run_id}.pt"]
+            self.label_names = [f"RUN_{run_id}.pt"]
+        elif isinstance(i, list):
+            self.input_names = [f"RUN_{get_run_ids_from_prep(self.path / "Inputs")[ii]}.pt" for ii in i]
+            self.label_names = [f"RUN_{get_run_ids_from_prep(self.path / "Labels")[ii]}.pt" for ii in i]
+        else:
+            raise ValueError("i must be an int or a list of ints")
+        self.input_names.sort()
+        self.label_names.sort()

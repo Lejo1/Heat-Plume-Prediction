@@ -1,5 +1,7 @@
 import numpy as np
 from pathlib import Path
+from typing import Dict
+import matplotlib.pyplot as plt
 
 from preprocessing.datasets.dataset import DataPoint
 from processing.networks.unetVariants import UNetNoPad2
@@ -7,9 +9,8 @@ from processing.networks.unet import UNet
 from postprocessing.visualization import reverse_norm_one_dp
 
 def unify_size(inputs, required_size):
-    # expect square
-    start = int((len(inputs[0,0]) - required_size)//2)
-    inputs = inputs[:,start:start+required_size, start:start+required_size]
+    start = [int((len(inputs[0]) - required_size[0])//2), int((len(inputs[0,0]) - required_size[1])//2)]
+    inputs = inputs[:,start[0]:start[0]+required_size[0], start[1]:start[1]+required_size[1]]
     return inputs
 
 def masking(data, threshold:float = 10.7):
@@ -19,7 +20,7 @@ def masking(data, threshold:float = 10.7):
 
 # flood fill
 def in_bounds(curr_pos, size):
-    tmp = (curr_pos >= 0) & (curr_pos < size)
+    tmp = (curr_pos >= 0) & (curr_pos[0] < size[0]) & (curr_pos[1] < size[1])
     return tmp[0] & tmp[1]
  
 def select_in_bounds(curr_pos, size):
@@ -29,16 +30,16 @@ def filter_visited(curr_pos, visited, field):
     return curr_pos.T[(~visited[curr_pos[0],curr_pos[1]] & field[curr_pos[0],curr_pos[1]])].T
  
 def step(active_indices, visited, field):
-    size = visited.shape[0]
+    size = visited.shape
     visited[active_indices[0],active_indices[1]] = True
     up = active_indices.copy()
-    up[1] += 1
+    up[0] += 1
     down = active_indices.copy()
-    down[1] -= 1
+    down[0] -= 1
     right = active_indices.copy()
-    right[0] += 1
+    right[1] += 1
     left = active_indices.copy()
-    left[0] -= 1
+    left[1] -= 1
     up = select_in_bounds(up, size)
     down = select_in_bounds(down, size)
     left = select_in_bounds(left, size)
@@ -74,7 +75,7 @@ def test_flood_fill():
 def connectivity_field_flood(mat_ids_unnormed, mask_output):
     hps = np.where(mat_ids_unnormed == 2)
     hps = np.array(hps)
-    connectivity_field  = flood_fill(hps, mask_output[0].cpu().numpy())
+    connectivity_field = flood_fill(hps, mask_output[0].cpu().numpy())
 
     unconnected_cells = connectivity_field ^ np.array(mask_output[0])
     connected_cells = np.sum(np.array(mask_output[0]))
@@ -89,36 +90,49 @@ def calc_connectivity(model_path:Path, data_path:Path, data_id: int, model:UNet,
 
     # Data preparation
     inputs, data, output = reverse_norm_one_dp(inputs, label, output, data.norm)
-    required_size = len(output[0,0])
+    required_size = [len(output[0]), len(output[0,0])]
     inputs = unify_size(inputs, required_size)
     label = unify_size(label, required_size)
     output = unify_size(output, required_size)
 
+    conn_label_dict = connectivityLoss(inputs, label, id_mat_ids, threshold)
+    conn_output_dict = connectivityLoss(inputs, output, id_mat_ids, threshold)
+    conn_label_dict["field"] = label[0]
+    conn_output_dict["field"] = output[0]
+
+    return conn_label_dict, conn_output_dict
+
+def connectivityLoss(inputs, data, id_mat_ids:int, threshold:float=10.7) -> Dict:
+    """
+    expects one data point 
+
+    Returns: dict: array of connected cells, array of unconnected cells, ratio of unconnected/connected cells, i.e. no unit
+    """
     # Data masking at threshold
-    mask_label, masked_label = masking(label, threshold)
-    mask_output, masked_output = masking(output, threshold)
+    mask, _ = masking(data, threshold)
 
-    connectivity_label, unconn_cells_label, conn_cells_label = connectivity_field_flood(inputs[id_mat_ids], mask_label)
-    ratio_label = np.sum(unconn_cells_label)/conn_cells_label
-    # print("Ratio: ", ratio_label, ", unconnected cells: ", np.sum(unconn_cells_label), ", connected cells: ", conn_cells_label)
-    connectivity_output, unconn_cells_output, conn_cells_output = connectivity_field_flood(inputs[id_mat_ids], mask_output)
-    ratio_output = np.sum(unconn_cells_output)/conn_cells_output
-    # print("Ratio: ", np.sum(unconn_cells_output)/conn_cells_output, ", unconnected cells: ", np.sum(unconn_cells_output), ", connected cells: ", conn_cells_output)
-
-    return {"field" : label[0],
-                      "connectivity" : connectivity_label,
-                      "unconnected_cells" : unconn_cells_label,
-                      "ratio" : ratio_label}, {"field" : output[0],
-                      "connectivity" : connectivity_output,
-                      "unconnected_cells" : unconn_cells_output,
-                      "ratio" : ratio_output}
+    connectivity, unconn_cells, conn_cells = connectivity_field_flood(inputs[int(id_mat_ids)], mask)
+    ratio = np.sum(unconn_cells)/conn_cells
+    
+    return {"connectivity" : connectivity,
+            "unconnected_cells" : unconn_cells,
+            "ratio" : ratio}
 
 if __name__ == "__main__":
-    model_path = Path("/home/pelzerja/pelzerja/test_nn/1HP_NN/runs/allin1/paper24 finals/naive_approach_unetnopad")
-    data_path = Path("/scratch/sgs/pelzerja/datasets_prepared/allin1/dataset_giant_100hp_varyK inputs_pki outputs_t")
-    run_id = 2
-    id_mat_ids = 2
-    model = UNetNoPad2(in_channels=3, out_channels=1, depth=3, init_features=32, kernel_size=5).float()
+    model_path = Path("/scratch/sgs/pelzerja/runs/allin1/bestT_moreData_trial15")
+    data_path = Path("/scratch/sgs/pelzerja/datasets_prepared/allin1/dataset_100hp_scaling_real_fixP0_0025 inputs_ixydk+s_outer outputs_t")
+    run_id = 0
+    id_mat_ids = 0
+    model = UNetNoPad2(in_channels=6, out_channels=1, depth=4, init_features=16, kernel_size=5, stride=1, dilation=1, activation="leakyrelu", norm="groupnorm", repeat_inner=False).float()
 
     threshold = 10.7
-    dict_connectivity = calc_connectivity(model_path, data_path, model, id_mat_ids, threshold)
+    dict_connectivity_label, dict_connectivity_output = calc_connectivity(model_path, data_path, run_id, model, id_mat_ids, threshold)
+
+    plt.figure(figsize=(10, 10))
+    plt.subplot(1, 2, 1)
+    plt.imshow(dict_connectivity_label["connectivity"])
+    plt.colorbar()
+    plt.subplot(1,2,2)
+    plt.imshow(dict_connectivity_label["unconnected_cells"])
+    plt.colorbar()
+    plt.savefig("connectivity_label.png")

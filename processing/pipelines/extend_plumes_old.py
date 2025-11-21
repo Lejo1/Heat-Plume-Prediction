@@ -16,7 +16,7 @@ def load_front(model_front_path, dataset_front, run_id, model_name="model.pt"):
     # load and init first box stuff (extend1: data+model)
     inputs_front = torch.load(dataset_front / "Inputs" / f"RUN_{run_id}.pt")
     labels_front = torch.load(dataset_front / "Labels" / f"RUN_{run_id}.pt")
-    model_front = UNetHalfPad(in_channels=4).float()
+    model_front = UNet(in_channels=4).float()
     model_front.load(model_front_path, model_name=model_name)
     model_front.eval()
     return model_front, inputs_front, labels_front

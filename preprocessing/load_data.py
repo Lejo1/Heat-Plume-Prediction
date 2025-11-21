@@ -5,7 +5,7 @@ from typing import Tuple
 from pathlib import Path
 import matplotlib.pyplot as plt
 
-def load_data(data_path: Path, time: str, variables: dict, dimensions_of_datapoint: tuple, additional_input: torch.Tensor = None, time_prediction: str= "   1 Time  2.75000E+01 y", print_bool: bool = False, refined:bool=False, goal_resolution:float=None):
+def load_data(data_path: Path, time: str, variables: dict, dimensions_of_datapoint: tuple, additional_input: torch.Tensor = None, time_prediction: str= "   1 Time  2.75000E+01 y", print_bool: bool = False, refined:bool=False, goal_resolution:float=None, old_data:bool=False):
     """
     Load data from h5 file on data_path, but only the variables named in variables.get_ids() at time stamp variables.time
     Sets the values of each PhysicalVariable in variables to the loaded data.
@@ -13,7 +13,8 @@ def load_data(data_path: Path, time: str, variables: dict, dimensions_of_datapoi
     if refined:
         fct_reshape = lambda x,key: reshape_refined(data_path.parent, x, dimensions_of_datapoint, goal_resolution, key)
     else:
-        fct_reshape = lambda x, key: x.reshape(dimensions_of_datapoint)
+        order = "C" if not old_data else "F"  # C-order for new data, F-order for old data
+        fct_reshape = lambda x, key: x.reshape(dimensions_of_datapoint, order=order)
     data = dict()
     with h5py.File(data_path, "r") as file:
         for key in variables:  # properties

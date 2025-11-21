@@ -5,8 +5,8 @@ from typing import Dict
 import pathlib
 
 # set backend for matplotlib, necessary if no GUI is available, e.g. in tmux
-import matplotlib
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,7 +32,7 @@ class DataToVisualize:
     vmin: float = None
 
     def __post_init__(self):
-        extent = (0,int(self.extent_highs[0]),int(self.extent_highs[1]),0)
+        extent = (0,int(self.extent_highs[1]),int(self.extent_highs[0]),0)
 
         if "temperature" in self.physical_property.lower():
             cmap = "jp_temperature"
@@ -43,7 +43,8 @@ class DataToVisualize:
             
         self.imshowargs = {"cmap": cmap, 
                            "extent": extent,
-                           "interpolation": "nearest",}
+                           "interpolation": "nearest",
+                           "origin": "lower",}
         if self.vmax is not None:
             self.imshowargs["vmax"] = self.vmax
         if self.vmin is not None:
@@ -51,13 +52,15 @@ class DataToVisualize:
 
         self.contourfargs = {"levels": np.arange(10.4, 16, 0.25), 
                              "cmap": cmap, 
-                             "extent": extent}
+                             "extent": extent,
+                             "origin": "lower",}
         
         T_gwf = 10.6
         T_inj_diff = 5.0
         self.contourargs = {"levels" : [np.round(T_gwf + 1, 1)],
                             "cmap" : "Pastel1", 
-                            "extent": extent}
+                            "extent": extent,
+                            "origin": "lower",}
 
         if self.physical_property == "Liquid Pressure [Pa]":
             self.physical_property = "Pressure [Pa]"
@@ -107,18 +110,16 @@ def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datap
 
             x = inputs[datapoint_id] #.to(args["device"])
             y = labels[datapoint_id] #.to(args["device"])
-
+            
             if args["problem"] == "extend":
                 y_out = infer_nopad(model, x, y, params, overlap=True, device=args["device"])
             else:
                 y_out = model.infer(x.unsqueeze(0), args["device"])
 
             x, y, y_out = reverse_norm_one_dp(x, y, y_out, norm)
-            dict_to_plot = prepare_data_to_plot(x, y, y_out, info) # TODO vorher: y[0], y_out[0]
+            dict_to_plot = prepare_data_to_plot(x, y, y_out, info)
 
             if args["problem"]== "allin1":
-                # if settings.case=="test":
-                #     plot_datafields(dict_to_plot, name_pic, settings_pic, only_inner=True)
                 plot_datafields(dict_to_plot, name_pic, settings_pic, only_inner=False, plot_all_in_1_pic=False)
             else:
                 plot_datafields(dict_to_plot, name_pic, settings_pic)
@@ -181,15 +182,14 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
             plt.sca(axes[index])
             plt.title(datapoint.category)
             if only_inner:
-                plt.imshow(datapoint.data[100:400,100:400].T, **datapoint.imshowargs)
-            else:  
-                plt.imshow(datapoint.data.T, **datapoint.imshowargs)
+                plt.imshow(datapoint.data[100:400,100:400], **datapoint.imshowargs)
+            else:
+                plt.imshow(datapoint.data, **datapoint.imshowargs)
             plt.gca().invert_yaxis()
 
             plt.ylabel("x [m]")
             aligned_colorbar(label=datapoint.physical_property)
 
-        # plt.sca(axes[-1]) # TODO DONT WANT THAT ANYMORE??? FLIPS MY PICS
         plt.xlabel("y [m]")
         plt.tight_layout()
         ext_inner = "_inner" if only_inner else ""
@@ -200,13 +200,12 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
             fig.set_figheight(5)
             plt.title(datapoint.category)
             if only_inner:
-                plt.imshow(datapoint.data[100:400,100:400].T, **datapoint.imshowargs)
+                plt.imshow(datapoint.data[100:400,100:400], **datapoint.imshowargs)
             else:  
-                plt.imshow(datapoint.data.T, **datapoint.imshowargs)
-            # plt.gca().invert_yaxis() # TODO DONT WANT THAT ANYMORE!! FLIPS MY PICS
+                plt.imshow(datapoint.data, **datapoint.imshowargs)
 
-            plt.ylabel("x [m]")
-            plt.xlabel("y [m]")
+            plt.ylabel("y [m]")
+            plt.xlabel("x [m]")
             aligned_colorbar(label=datapoint.physical_property)
             plt.tight_layout()
             ext_inner = "_inner" if only_inner else ""
@@ -245,44 +244,44 @@ def infer_all_and_summed_pic(model: UNet, dataloader: DataLoader, device: str):
     current_id = 0
     avg_inference_time = 0
     summed_error_pic = torch.zeros_like(torch.Tensor(dataloader.dataset[0][0][0])).cpu()
+    max_error = torch.zeros_like(summed_error_pic).cpu()
 
     for inputs, labels in dataloader:
         len_batch = inputs.shape[0]
         for datapoint_id in range(len_batch):
             # get data
-            start_time = time.perf_counter()
             x = inputs[datapoint_id].to(device)
             x = torch.unsqueeze(x, 0)
+            start_time = time.perf_counter()
             y_out = model(x).to(device)
+            avg_inference_time += (time.perf_counter() - start_time)
             y = labels[datapoint_id]
 
             # reverse transform for plotting real values
-            x = norm.reverse(x.cpu().detach().squeeze(), "Inputs")
             y = norm.reverse(y.cpu().detach(),"Labels")[0]
             y_out = norm.reverse(y_out.cpu().detach()[0],"Labels")[0]
-            avg_inference_time += (time.perf_counter() - start_time)
             summed_error_pic += abs(y-y_out)
+            # pixelwise maximum error
+            max_error = torch.maximum(max_error, abs(y-y_out))
 
             current_id += 1
-
     avg_inference_time /= current_id
     summed_error_pic /= current_id
-    return avg_inference_time, summed_error_pic
+    print(f"Average inference time per datapoint: {avg_inference_time:.4f} seconds, summed error pic shape: {summed_error_pic.shape}, number sampled: {current_id}")
+    return avg_inference_time, summed_error_pic, max_error
 
 def plot_avg_error_cellwise(dataloader, summed_error_pic, settings_pic: dict):
-    # plot avg error cellwise AND return time measurements for inference
+    # plot avg error cellwise
 
     info = dataloader.dataset.dataset.info
     extent_highs = (np.array(info["CellsSize"][:2]) * dataloader.dataset[0][0][0].shape)
-    extent = (0,int(extent_highs[0]),int(extent_highs[1]),0)
+    extent = (0,int(extent_highs[1]),0,int(extent_highs[0]))
 
-    fig = plt.figure()
-    fig.set_figheight(5)
-    plt.imshow(summed_error_pic.T, cmap="jp_temperature", extent=extent)
-    plt.gca().invert_yaxis()
+    plt.figure(figsize=(16,2.5))
+    plt.imshow(summed_error_pic, origin="lower", cmap="binary", extent=extent)
     plt.ylabel("x [m]")
     plt.xlabel("y [m]")
-    plt.title("Cellwise Averaged Error")
+    plt.title("Cellwise Averaged Absolute Error")
     aligned_colorbar(label="Temperature [°C]")
 
     plt.tight_layout()

@@ -11,4 +11,7 @@ tensorboard
 pytest
 pynvml
 torchmetrics
-wandb
+# wandb
+# optuna
+# jupyterlab
+# jupyterlab-optuna

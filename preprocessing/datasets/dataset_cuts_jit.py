@@ -10,6 +10,9 @@ class SimulationDatasetCuts(DatasetBasis):
     def __init__(self, path:pathlib.Path, skip_per_dir:int=4, box_size:int=64, ids:List[int]=[0,], case:str="train"):
         DatasetBasis.__init__(self, path, box_size)
         
+        if isinstance(ids, int):    # handle ids = list AND int
+            ids = [ids]
+        
         run_ids_all = get_run_ids_from_prep(self.path / "Inputs")
         run_ids = [run_ids_all[id] for id in ids]
         self.inputs = []
