@@ -111,13 +111,13 @@ class UNet(nn.Module):
                     raise Exception
         if models_differ == 0:  print('Models match perfectly! :)')
 
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find("Conv") != -1:
-        m.weight.data.normal_(0.0, 0.02)
-    elif classname.find("BatchNorm") != -1:
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.zero_()
+    def weights_init(self,m):
+        classname = m.__class__.__name__
+        if classname.find("Conv") != -1:
+            m.weight.data.normal_(0.0, 0.02)
+        elif classname.find("BatchNorm") != -1:
+            m.weight.data.normal_(1.0, 0.02)
+            m.bias.data.zero_()
 
 class PaddingCircular(nn.Module):
     def __init__(self, kernel_size, direction="both"):

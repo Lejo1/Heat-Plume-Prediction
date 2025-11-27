@@ -20,23 +20,31 @@
 - run main.py
 
     ```
-    python main.py --dataset_raw NAME_OF_DATASET --problem 2stages
-    ```
+    python main.py --dataset_raw NAME_OF_DATASET --problem PROBLEM
+    
     optional arguments:
-    --inputs: make sure, they are the same as in the model (default `gksi`)
-    --visualize: visualize the results (default `False`)
-    --len_box: length in y-direction that the datapoints should be cut off (default `256`). Make sure, this number is less or equal to the length of the simulation run.
+    --problem: use '2stages' for 2D and '3d' for 3D (default '2stages'). 3D is only implemented for the 1st stage!
+    --inputs: make sure, they are the same as in the model (default 'gksi')
+    --visualize: visualize the results (default 'False')
+    --epochs: number of epochs to train
+    --device: 'cuda:0' or 'cuda:1' etc. or 'cpu' (default 'cuda:0')
+    --destination: define a user specific name for the destination folder of the trained model (default build from dataset name + inputs)
+    --notes: string input to get a 'notes.txt' file in model folder
 
 ## Infer a 1st stage model:
 - run main.py:
 
     ```
-    python main.py --dataset_raw NAME_OF_DATASET --case test --model PATH_TO_MODEL (after "runs/") --problem 2stages
-    
+    python main.py --dataset_raw NAME_OF_DATASET --case test --model PATH_TO_MODEL (after "runs/") --problem PROBLEM
+
     optional arguments:
-    --inputs: make sure, they are the same as in the model (default `gksi`)
-    --visualize: visualize the results (default `False`)
+    --problem: use '2stages' for 2D and '3d' for 3D (default '2stages'). 3D is only implemented for the 1st stage!
+    --inputs: make sure, they are the same as in the model (default 'gksi')
+    --visualize: visualize the results (default 'False')
+    --destination: define a user specific name for the destination folder of the trained model (default build from dataset name + inputs)
+    --notes: string input to get a 'notes.txt' file in model folder
     ```
+
 ## Training a 2nd stage model (2HP-NN): !excluded on this branch!
 - for running a 2HP-NN you need the prepared 2HP-dataset in datasets_prepared_dir_2hp (paths.yaml)
 - for preparing 2HP-NN: expects that 1HP-NN exists and trained on; for 2HP-NN (including preparation) run main.py with the following arguments:
@@ -51,12 +59,15 @@
     --visualize: visualize the results (default `False`)
     --case: `test`, `train` or `finetune` (default `train`)
     ```
+- NOT implemented for 3D!
 
 ## Infer a 2nd stage model: !excluded on this branch!
 
 - as inferring a 1st stage model but with model name from trained 2nd stage model
 
 -- case: `test`
+
+- NOT implemented for 3D!
 
 ## Training an extend plumes model: !excluded in this commit!
 - train a model for the first box (e.g. 1HPNN) or via `problem extend1`, e.g.
@@ -83,6 +94,8 @@
     -- len_box: length of each box predicted and used for training (perceptive field)
     --skip_per_dir: if skip=len_box: no overlap between different datapoints. skip should never be larger than len_box, otherwise there are parts of the simulation run that are never seen in training.
     ```
+- NOT implemented for 3D!
+
 
 ## Infering and combining both models of extend plumes:
 - see `extend_plumes.py:pipeline_infer_extend_plumes` and `__main__` on how to use it.

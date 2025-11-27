@@ -1,0 +1,57 @@
+CellsNumber:
+- 64
+- 256
+- 64
+CellsNumberPrior:
+- 64
+- 256
+- 64
+CellsSize:
+- 5.0
+- 5.0
+- 5.0
+Inputs:
+  Material ID:
+    index: 3
+    max: 1.0
+    mean: 1.0000009536743164
+    min: 0.0
+    norm: Rescale
+    std: 9.814816439757124e-05
+  Permeability X [m^2]:
+    index: 1
+    max: 4.7149790738387765e-09
+    mean: 7.043023386721359e-10
+    min: 1.0506016195899193e-11
+    norm: Rescale
+    std: 1.126351900637701e-09
+  Pressure Gradient [-]:
+    index: 0
+    max: -0.0015404503792524338
+    mean: -0.0024114942643791437
+    min: -0.003463453846052289
+    norm: Rescale
+    std: 0.0005299656768329442
+  SDF:
+    index: 2
+    max: 1.0
+    mean: 0.5212464928627014
+    min: 0.0
+    norm: null
+    std: 0.02818308211863041
+Labels:
+  Temperature [C]:
+    index: 0
+    max: 15.597901344299316
+    mean: 10.607549667358398
+    min: 10.595173835754395
+    norm: Rescale
+    std: 0.023867929354310036
+PositionHPPrior:
+- 31
+- 21
+- 31
+PositionLastHP:
+- 31
+- 21
+- 31

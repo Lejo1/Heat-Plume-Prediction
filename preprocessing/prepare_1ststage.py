@@ -34,7 +34,7 @@ def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, i
         info = None
             
     # TODO unsauber, TODO cutlengthtrafo zu länge die in info.yaml gespeichert ist
-    prepare_dataset(paths, settings.inputs, power2trafo=True, cutlengthtrafo=cutlengthtrafo, box_length=settings.len_box,info=info)
+    prepare_dataset(paths, settings.inputs, settings.problem, power2trafo=True, cutlengthtrafo=cutlengthtrafo, box_length=settings.len_box,info=info)
     
     if settings.case == "train" and not settings.case_2hp:
         # store info of training
@@ -48,7 +48,7 @@ def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, i
                 "duration of whole process in seconds": time_end}, file)
         
 
-def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: bool = True, cutlengthtrafo: bool = False, box_length: int = 256, info:dict = None):
+def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, problem: str, power2trafo: bool = True, cutlengthtrafo: bool = False, box_length: int = 256, info:dict = None):
     """
     Create a dataset from the raw pflotran data in raw_data_path.
     The saved dataset is normalized using the mean and standard deviation, which are saved to info.yaml in the new dataset folder.
@@ -72,7 +72,10 @@ def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: 
     dataset_prepared_path.joinpath("Inputs").mkdir(parents=True, exist_ok=True) # TODO
     dataset_prepared_path.joinpath("Labels").mkdir(parents=True, exist_ok=True)
 
-    transforms = get_transforms(reduce_to_2D=True, reduce_to_2D_xy=True, power2trafo=power2trafo, cutlengthtrafo=cutlengthtrafo, box_length=box_length)
+    if problem == "3d":
+        transforms = get_transforms(reduce_to_2D=False, reduce_to_2D_xy=False, power2trafo=False, cutlengthtrafo=False, box_length=box_length)
+    else:
+        transforms = get_transforms(reduce_to_2D=True, reduce_to_2D_xy=True, power2trafo=power2trafo, cutlengthtrafo=cutlengthtrafo, box_length=box_length)
     inputs = expand_property_names(inputs)
     time_first = "   0 Time  0.00000E+00 y"
     time_final = "   3 Time  5.00000E+00 y"
@@ -128,7 +131,11 @@ def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: 
     info["CellsSize"] = cell_size.tolist()
     # change of size possible; order of tensor is in any case the other way around
     assert 1 in y.shape, "y is not expected to have several output parameters"
-    assert len(y.shape) == 3, "y is expected to be 2D"
+    if problem == "3d":
+        assert len(y.shape) == 4, "y is expected to be 3D"
+    else:
+        assert len(y.shape) == 3, "y is expected to be 2D"
+        
     dims = list(y.shape)[1:]
     info["CellsNumber"] = dims
     try:
