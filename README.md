@@ -47,6 +47,7 @@
     --visualize: visualize the results (default `False`)
     ```
 
+
 ## Finding the results:
 - resulting model (`model.pt`) + normalization parameters (info.yaml) used can be found in `runs/DESTINATION` with `DESTINATION` being the user defined or default name in the call of main.py
 - this folder also contains visualisations if any were made during the training/testing
