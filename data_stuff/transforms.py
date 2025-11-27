@@ -26,7 +26,7 @@ class NormalizeTransform:
                 logging.warning(f"Index {index} might be in training data but not in this dataset")
         return data
     
-    def reverse(self,data,type = "Labels"):
+    def reverse(self, data, type="Labels"):
         for prop, stats in self.info[type].items():
             index = stats["index"]
             self.__reverse_norm(data,index,stats)
@@ -45,8 +45,8 @@ class NormalizeTransform:
             raise ValueError(f"Normalization type '{stats['Norm']}' not recognized")
         
     def __reverse_norm(self,data,index,stats):
-        if len(data.shape) == 4:
-            assert data.shape[0] <= data.shape[1], "Properties must be in 0th dimension; batches pushed to 1st dimension"
+        # if len(data.shape) == 4:
+        #     assert data.shape[0] <= data.shape[1], "Properties must be in 0th dimension; batches pushed to 1st dimension"
         norm = stats["norm"]
         if norm == "Rescale":
             delta = stats["max"] - stats["min"]

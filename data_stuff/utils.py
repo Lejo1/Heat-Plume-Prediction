@@ -22,6 +22,9 @@ class SettingsTraining:
     inputs: str
     device: str
     epochs: int
+    prev_boxes: int
+    extend: int
+    overfit_str: str
     destination: pathlib.Path = ""
     dataset_prep: str = ""
     case: str = "train"
@@ -34,42 +37,69 @@ class SettingsTraining:
     problem: str = "2stages"
     notes: str = ""
     skip_per_dir: int = 4
-    len_box: int = 256
-    
+    len_box: int = 640
+    net: str = "convLSTM"
+    vis_entire_plume: bool = False
+    overfit: int = 0
+    num_layers: int = 1
+    loss: str = "mse"
+    activation: str = "relu"
+    enc_conv_features = [16, 32, 64, 64, 64]
+    dec_conv_features = [64, 64, 64]
+    enc_kernel_sizes = [7, 5, 5, 5, 5]
+    dec_kernel_sizes = [5, 5, 7]
+
     def __post_init__(self):
-        if self.case in ["finetune", "finetuning", "Finetune", "Finetuning"]:
+        # Normalize the case field and set associated flags.
+        case_map = {
+            "finetune": ["finetune", "finetuning", "Finetune", "Finetuning"],
+            "test": ["test", "testing", "Test", "Testing", "TEST"],
+            "train": ["train", "training", "Train", "Training", "TRAIN"],
+        }
+        
+        if self.case in case_map["finetune"]:
             self.finetune = True
             self.case = "finetune"
-            assert self.model is not None, "Path to model is not defined"
-        elif self.case in ["test", "testing", "Test", "Testing", "TEST"]:
+            assert self.model is not None, "Path to model is not defined for finetuning"
+        elif self.case in case_map["test"]:
             self.case = "test"
             self.test = True
-            assert self.finetune is False, "Finetune is not possible in test mode"
-        elif self.case in ["train", "training", "Train", "Training", "TRAIN"]:
+            assert not self.finetune, "Finetune is not possible in test mode"
+        elif self.case in case_map["train"]:
             self.case = "train"
-            assert self.finetune is False, "Finetune is not possible in train mode"
-            assert self.test is False, "Test is not possible in train mode"
+            assert not self.finetune, "Finetune is not possible in train mode"
+            assert not self.test, "Test is not possible in train mode"
+        else:
+            raise ValueError(f"Invalid case: {self.case}")
 
+        # Additional validation for test and finetune cases.
         if self.case in ["test", "finetune"]:
-            assert self.model != "runs/default", "Please specify model path for testing or finetuning"
+            assert self.model != "runs/default", "Please specify a valid model path for testing or finetuning"
 
-        if self.destination == "":
-            self.destination = self.dataset_raw + " inputs_" + self.inputs + " case_"+self.case + " box"+str(self.len_box) + " skip"+str(self.skip_per_dir)
+        # Initialize overfit_str based on the overfit parameter.
+        self.overfit_str = f" overfit_{self.overfit}" if self.overfit else ""
+
+        # Set the default destination if none is provided.
+        if not self.destination:
+            self.destination = pathlib.Path(
+                f"case_{self.case} prev_{self.prev_boxes} extend_{self.extend} "
+                f"skip_{self.skip_per_dir} loss_{self.loss} layers_{self.num_layers}"
+            )       
 
     def save(self):
         save_yaml(self.__dict__, self.destination, "command_line_arguments")
         
     def make_destination_path(self, destination_dir: pathlib.Path):
         if self.destination == "":
-            self.destination = self.dataset_raw + " inputs_" + self.inputs + " case_"+self.case + " box"+str(self.len_box) + " skip"+str(self.skip_per_dir)
+            self.destination = f"case_{self.case} prev_{self.prev_boxes} extend_{self.extend} skip_{self.skip_per_dir} loss_{self.loss} layers_{self.num_layers}"
         self.destination = destination_dir / self.destination
-        self.destination.mkdir(exist_ok=True)
+        self.destination.mkdir(parents=True, exist_ok=True)
 
     def make_model_path(self, destination_dir: pathlib.Path):
         self.model = destination_dir / self.model
 
     def save_notes(self):
         # save notes to text file in destination
-        if self.notes != "":
+        if self.notes is not None:
             with open(self.destination / "notes.txt", "w") as file:
                 file.write(self.notes)

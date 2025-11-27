@@ -3,8 +3,10 @@ import logging
 import pathlib
 import time
 from dataclasses import dataclass
+import matplotlib.pyplot as plt
+import torch
 
-from torch.nn import Module, MSELoss, modules
+from torch.nn import Module, MSELoss, modules, L1Loss
 from torch.optim import Adam, Optimizer
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -15,6 +17,8 @@ from postprocessing.visualization import visualizations
 from data_stuff.utils import SettingsTraining
 from networks.unet import weights_init, UNet
 from networks.unetHalfPad import UNetHalfPad
+from networks.convLSTM import weights_init, Seq2Seq
+import datetime
 
 @dataclass
 class Solver(object):
@@ -43,18 +47,23 @@ class Solver(object):
             file = open(settings.destination / "log_loss_per_epoch.csv", 'w', newline='')
             csv_writer = csv.writer(file)
             csv_writer.writerow(["epoch", "val loss", "train loss"])
+            file.flush()
             file = open(settings.destination / "log_best_loss_per_epoch.csv", 'w', newline='')
             csv_writer_best = csv.writer(file)
             csv_writer_best.writerow(["epoch", "val loss", "train loss"])
+            file.flush()
+            print(f"wrote in {settings.destination}/log_best_loss_per_epoch.csv")
 
         start_time = time.perf_counter()
         # initialize tensorboard
         writer = SummaryWriter(settings.destination)
         device = settings.device
         self.model = self.model.to(device)
-        writer.add_graph(self.model, next(iter(self.train_dataloader))[0].to(device))
-
+        #writer.add_graph(self.model, next(iter(self.train_dataloader))[0].to(device))
+        print("Model loaded" )
+        
         epochs = tqdm(range(settings.epochs), desc="epochs", disable=False)
+                  
         for epoch in epochs:
             try:
                 # Set lr according to schedule
@@ -75,8 +84,13 @@ class Solver(object):
                 writer.add_scalar("val_loss", val_epoch_loss, epoch)
                 writer.add_scalar(
                     "learning_rate", self.opt.param_groups[0]["lr"], epoch)
-                epochs.set_postfix_str(
-                    f"train loss: {train_epoch_loss:.2e}, val loss: {val_epoch_loss:.2e}, lr: {self.opt.param_groups[0]['lr']:.1e}")
+                epochs.set_postfix(
+                    train_loss=f"{train_epoch_loss:.2e}",
+                    val_loss=f"{val_epoch_loss:.2e}",
+                    lr=f"{self.opt.param_groups[0]['lr']:.1e}"
+                )
+                tqdm.write(f'Epoch {epoch} - train_loss: {train_epoch_loss:.2e}, val_loss: {val_epoch_loss:.2e}')
+
                 
                 # Keep best model
                 if self.best_model_params is None or val_epoch_loss < self.best_model_params["loss"]:
@@ -92,18 +106,23 @@ class Solver(object):
                         "training time in sec": (time.perf_counter() - start_time),
                     }
 
+                    #save model
+                    self.model.save(settings.destination)
+
                 if log_val_epoch:
                     if epoch in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 5000, 10000, 15000, 20000, 24999]:
                         csv_writer.writerow([epoch, val_epoch_loss, train_epoch_loss])
                         csv_writer_best.writerow([epoch, self.best_model_params["loss"], self.best_model_params["train loss"]])
+                        file.flush()
                         # for name, param in self.model.named_parameters():
                         #     writer.add_histogram(name, param, epoch)
 
             except KeyboardInterrupt:
-                model_tmp = UNetHalfPad(in_channels=len(settings.inputs), out_channels=1) # UNet
+                model_tmp = Seq2Seq()
                 model_tmp.load_state_dict(self.best_model_params["state_dict"])
                 model_tmp.to(settings.device)
                 model_tmp.save(settings.destination, model_name=f"interim_model_e{epoch}.pt")
+                print(f'Model saved after interrupt in {settings.destination}')
                 visualizations(model_tmp, self.val_dataloader, settings.device, plot_path=settings.destination / f"plot_val_interim_e{epoch}", amount_datapoints_to_visu=2, pic_format="png")
 
                 try:
@@ -124,10 +143,12 @@ class Solver(object):
 
         if log_val_epoch:
             file.close()
+    
 
     def run_epoch(self, dataloader: DataLoader, device: str):
         epoch_loss = 0.0
-        for x, y in dataloader:
+        for x, y in dataloader: 
+
             x = x.to(device)
             y = y.to(device)
 
@@ -135,7 +156,7 @@ class Solver(object):
                 self.opt.zero_grad()
 
             y_pred = self.model(x)
-
+            
             loss = None
             loss = self.loss_func(y_pred, y)
 
@@ -144,8 +165,13 @@ class Solver(object):
                 self.opt.step()
 
             epoch_loss += loss.detach().item()
+            
         epoch_loss /= len(dataloader)
+
+        
         return epoch_loss
+    
+    
 
     def save_lr_schedule(self, path: str):
         """ save learning rate history to csv file"""

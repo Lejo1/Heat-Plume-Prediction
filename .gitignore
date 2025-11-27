@@ -1,3 +1,12 @@
+# visualization files
+visu_extend.py
+study_extend_layers.py
+study_extend_prev.py
+study_GridSearch.py
+study.py
+extend_plumes.py
+extend_plumes_v2 reduced to used stuff.py
+
 paths.yaml
 paths_sdf.yaml
 
@@ -5,16 +14,26 @@ datasets_prepared/
 nerf/
 WIP_rnn/
 
+#jobscripts
+*.sh
+
+#databases
+*.db
+
+#textfiles
+*.txt
+
 # exclude for now
 runs/
 *.out
 
 # exclude testing notebook files and other random files
 *.ipynb
-3D_FCN.code-workspace
+*.code-workspace
 old/
 OLD/
 postprocessing/paper23/plots_paper_old?/
+
 
 # interim files
 events.out.*
@@ -70,10 +89,6 @@ MANIFEST
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
@@ -165,3 +180,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+#models
+.pt
+
+#
+/cnn_model
+

@@ -13,6 +13,7 @@ from torch.utils.data import DataLoader
 
 from data_stuff.transforms import NormalizeTransform
 from networks.unet import UNet
+from networks.convLSTM import Seq2Seq
 
 # mpl.rcParams.update({'figure.max_open_warning': 0})
 # plt.rcParams['figure.figsize'] = [16, 5]
@@ -23,26 +24,28 @@ from networks.unet import UNet
 class DataToVisualize:
     data: np.ndarray
     name: str
-    extent_highs :tuple = (1280,100) # x,y in meters
+    extent_highs :tuple #= (1280,100) # x,y in meters
     imshowargs: Dict = field(default_factory=dict)
     contourfargs: Dict = field(default_factory=dict)
     contourargs: Dict = field(default_factory=dict)
+    x_lim = (0,640)
+    y_lim = (0,64)
+    cmap: str = "hot"
 
     def __post_init__(self):
-        extent = (0,int(self.extent_highs[0]),int(self.extent_highs[1]),0)
 
-        self.imshowargs = {"cmap": "RdBu_r", 
-                           "extent": extent}
+        self.imshowargs.update({"cmap": self.cmap, 
+                           "extent": self.extent_highs})
 
         self.contourfargs = {"levels": np.arange(10.4, 16, 0.25), 
-                             "cmap": "RdBu_r", 
-                             "extent": extent}
+                             "cmap": "terrain", 
+                             "extent": self.extent_highs}
         
         T_gwf = 10.6
         T_inj_diff = 5.0
         self.contourargs = {"levels" : [np.round(T_gwf + 1, 1)],
                             "cmap" : "Pastel1", 
-                            "extent": extent}
+                            "extent": self.extent_highs}
 
         if self.name == "Liquid Pressure [Pa]":
             self.name = "Pressure in [Pa]"
@@ -53,61 +56,96 @@ class DataToVisualize:
         elif self.name == "SDF":
             self.name = "SDF-transformed position in [-]"
     
-def visualizations(model: UNet, dataloader: DataLoader, device: str, amount_datapoints_to_visu: int = inf, plot_path: str = "default", pic_format: str = "png"):
-    print("Visualizing...", end="\r")
 
-    if amount_datapoints_to_visu > len(dataloader.dataset):
-        amount_datapoints_to_visu = len(dataloader.dataset)
+def visualizations(model: UNet, dataloader: DataLoader, device: str, prev_boxes:int, extend:int, dp_to_visu: np.array = inf, plot_path: str = "default", pic_format: str = "png"):
+    print("Visualizing...", end="\r")
 
     norm = dataloader.dataset.dataset.norm
     info = dataloader.dataset.dataset.info
     model.eval()
     settings_pic = {"format": pic_format,
-                    "dpi": 600,}
+                    "dpi": 800,}
 
     current_id = 0
-    for inputs, labels in dataloader:
-        len_batch = inputs.shape[0]
-        for datapoint_id in range(len_batch):
-            name_pic = f"{plot_path}_{current_id}"
+    batch_id = 1
+    printed = 0
+    for batch_id, (inputs, labels) in enumerate(dataloader, start=0):
+        for dp_in_batch in range(dataloader.batch_size):
+            datapoint_id = batch_id * dataloader.batch_size + dp_in_batch
+            if datapoint_id in dp_to_visu:
+                name_pic = f"{plot_path}/dp_{int(datapoint_id/(20-prev_boxes-extend+1))}"
+                x = torch.unsqueeze(inputs[dp_in_batch].to(device), 0)
+                y = labels[dp_in_batch]
+                y_out = model(x).to(device)
+                y_out_copy = y_out.clone()
+                x_copy = x.clone()
+                y_copy = y.clone()
 
-            x = torch.unsqueeze(inputs[datapoint_id].to(device), 0)
-            y = labels[datapoint_id]
-            y_out = model(x).to(device)
+                y_out_it = torch.zeros([1,1,64*6, 64])
+                for i in range(6):
+                    y_out = model(x).to(device)
+                    start = i*64
+                    y_out_it[:,:,start:start+64,:] = y_out[:,:,:64,:]
+                    x = x[:, :, 1:, :, :]
+                    x[:,:, 64:128] = y_out[:,:,:64]
+                    x = torch.cat((x, torch.zeros(x.size(0), x.size(1), 1, x.size(3), x.size(4)).to('cuda:0')),dim=2)
+                
+                x, y, y_out = reverse_norm_one_dp(x_copy, y, y_out_copy, norm)
+                _,_, y_out_it = reverse_norm_one_dp(x_copy, y_copy, y_out_it, norm)
+                x_out = x[ -1, :prev_boxes ,:,:].squeeze().reshape(64*prev_boxes, 64)
 
-            x, y, y_out = reverse_norm_one_dp(x, y, y_out, norm)
-            dict_to_plot = prepare_data_to_plot(x, y, y_out, info)
+                y = torch.cat((x[-1][:prev_boxes].reshape(prev_boxes*64,64), y.squeeze()), dim=0)
+                y_out = torch.cat((x[-1][:prev_boxes].reshape(prev_boxes*64,64), y_out.squeeze()), dim=0)
+                y_out_it = torch.cat((x[-1][:prev_boxes].reshape(prev_boxes*64,64), y_out_it.squeeze()), dim=0)
+                dict_to_plot = prepare_data_to_plot(x, y.squeeze(), y_out.squeeze(), y_out_it.squeeze(), info, prev_boxes, extend)
 
-            plot_datafields(dict_to_plot, name_pic, settings_pic)
-            # plot_isolines(dict_to_plot, name_pic, settings_pic)
-            # measure_len_width_1K_isoline(dict_to_plot)
+                plot_datafields(dict_to_plot, name_pic, settings_pic)
+                printed += 1
 
-            if current_id >= amount_datapoints_to_visu-1:
+            if printed >= len(dp_to_visu):
                 return None
-            current_id += 1
+            
+            
 
 def reverse_norm_one_dp(x: torch.Tensor, y: torch.Tensor, y_out:torch.Tensor, norm: NormalizeTransform):
-    # reverse transform for plotting real values
-    x = norm.reverse(x.detach().cpu().squeeze(0), "Inputs")
-    y = norm.reverse(y.detach().cpu(),"Labels")[0]
-    y_out = norm.reverse(y_out.detach().cpu()[0],"Labels")[0]
+    x1 = norm.reverse(x[0][:4].detach().cpu(), "Inputs")
+    x2 = norm.reverse(x[0][-1].detach().cpu().unsqueeze(0), "Labels")
+    x = torch.cat((x1,x2),dim=0)
+
+    y = y.unsqueeze(0)
+    y = norm.reverse(y.detach().cpu(), "Labels")
+
+    y_out = norm.reverse(y_out.detach().cpu(),"Labels")
+
     return x, y, y_out
 
-def prepare_data_to_plot(x: torch.Tensor, y: torch.Tensor, y_out:torch.Tensor, info: dict):
-    # prepare data of temperature true, temperature out, error, physical variables (inputs)
-    temp_max = max(y.max(), y_out.max())
-    temp_min = min(y.min(), y_out.min())
-    extent_highs = (np.array(info["CellsSize"][:2]) * x.shape[-2:])
+def prepare_data_to_plot(x: torch.Tensor, y: torch.Tensor, y_out:torch.Tensor, y_out_it:torch.Tensor, info: dict, prev_boxes:int, extend:int):
+    length = 64 * (prev_boxes + extend)
+    length_temp = 64*prev_boxes
+    length_pred = 64*extend
+    length_unrolled = 64*8
+    perm = x[0]
+    perm = perm.reshape(length,64)
+    sdf = x[1].reshape(length,64)
+    temp = x[-1][:prev_boxes]
+    temp = temp.reshape(length_temp,64)
+    
+    temp_max = max(max(y.max(), y_out.max()), temp.max())
+    temp_min = min(min(y.min(), y_out.min()), temp.min())
+    extent_highs = (0,640,64,0)
+    y_out = y_out.reshape((extend+prev_boxes)*64,64)
+    y = y.reshape((64*(prev_boxes+extend)), 64)
 
-    dict_to_plot = {
-        "t_true": DataToVisualize(y, "Label: Temperature in [°C]", extent_highs, {"vmax": temp_max, "vmin": temp_min}),
-        "t_out": DataToVisualize(y_out, "Prediction: Temperature in [°C]", extent_highs, {"vmax": temp_max, "vmin": temp_min}),
-        "error": DataToVisualize(torch.abs(y-y_out), "Absolute error in [°C]", extent_highs),
+    dict_to_plot = {     
+        "sdf" : DataToVisualize(sdf, "Input: Signed Distance Function", (0,length,64,0), cmap="viridis"), 
+        #"press" : DataToVisualize(press, "Input: Pressure Gradient", (0,640,64,0), {"vmax": press_max, "vmin": press_min}, cmap="viridis"),
+        "perm" : DataToVisualize(perm,  "Input: Permeabilität",(0,length,64,0), cmap="viridis"),
+        "temp" : DataToVisualize(temp, "Input: Temperature in [°C]", (0,length_temp,64,0),{"vmax": temp_max, "vmin": temp_min}),
+        "t_true": DataToVisualize(y, f"Label: Temperature in [°C]", (0, length, 64, 0),{"vmax": temp_max, "vmin": temp_min}),
+        "t_out": DataToVisualize(y_out, "Direct prediction Dec6",(0,length,64,0), {"vmax": temp_max, "vmin": temp_min}),
+        "t_out_it": DataToVisualize(y_out_it, "Iterative prediction: Temperature in [°C]",(0,length_unrolled,64,0), {"vmax": temp_max, "vmin": temp_min}),
+         "error": DataToVisualize(torch.abs(y-y_out), "Error",(0,length,64,0), {"vmin": 0, "vmax": 2}),
     }
-    inputs = info["Inputs"].keys()
-    for input in inputs:
-        index = info["Inputs"][input]["index"]
-        dict_to_plot[input] = DataToVisualize(x[index], input, extent_highs)
 
     return dict_to_plot
 
@@ -120,23 +158,21 @@ def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pi
     
     for index, (name, datapoint) in enumerate(data.items()):
         plt.sca(axes[index])
+        axes[index].set_xlim(0,512)
+        axes[index].set_ylim(0,64)
+        axes[index].set_xticks([64*i for i in range(9)])
         plt.title(datapoint.name)
-        # if name in ["t_true", "t_out"]:  
-        #     with warnings.catch_warnings():
-        #         warnings.simplefilter("ignore")
-
-        #         CS = plt.contour(torch.flip(datapoint.data, dims=[1]).T, **datapoint.contourargs)
-        #     plt.clabel(CS, inline=1, fontsize=10)
         plt.imshow(datapoint.data.T, **datapoint.imshowargs)
-        plt.gca().invert_yaxis()
+        #plt.gca().invert_yaxis()
 
-        plt.ylabel("x [m]")
+        plt.ylabel("x [cells]")
         _aligned_colorbar()
 
     plt.sca(axes[-1])
-    plt.xlabel("y [m]")
+    plt.xlabel("y [cells]")
     plt.tight_layout()
     plt.savefig(f"{name_pic}.{settings_pic['format']}", **settings_pic)
+
 
 def plot_isolines(data: Dict[str, DataToVisualize], name_pic: str, settings_pic: dict):
     # plot isolines of temperature fields
@@ -160,7 +196,7 @@ def plot_isolines(data: Dict[str, DataToVisualize], name_pic: str, settings_pic:
     plt.tight_layout()
     plt.savefig(f"{name_pic}_isolines.{settings_pic['format']}", **settings_pic)
 
-def infer_all_and_summed_pic(model: UNet, dataloader: DataLoader, device: str):
+def infer_all_and_summed_pic(model, dataloader: DataLoader, device: str):
     '''
     sum inference time (including reverse-norming) and pixelwise error over all datapoints
     '''

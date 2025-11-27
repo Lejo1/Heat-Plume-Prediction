@@ -30,9 +30,9 @@ def set_paths_1hpnn(dataset_name: str, inputs:str = "", dataset_prep:str = "", p
         paths = yaml.safe_load(f)
 
     default_raw_dir = pathlib.Path(paths["default_raw_dir"])
-    destination_dir = pathlib.Path(paths["models_1hp_dir"])
+    destination_dir = pathlib.Path(paths["models"])
     datasets_prepared_dir = pathlib.Path(paths["datasets_prepared_dir"])
-    default_raw_dir, destination_dir, datasets_prepared_dir = extend_paths_for_problem(problem, default_raw_dir, destination_dir, datasets_prepared_dir)
+    default_raw_dir, destination_dir, datasets_prepared_dir = extend_paths_for_problem(problem, default_raw_dir, destination_dir, datasets_prepared_dir, dataset_name)
 
     dataset_raw_path = default_raw_dir / dataset_name
     if dataset_prep == "":
@@ -63,7 +63,7 @@ def set_paths_2hpnn(dataset_name: str, preparation_case: str, model_name: str = 
                 elif "dataset" in path.name:
                     dataset_model_trained_with_prep_path = prepared_1hp_dir / path.name
     else:
-        model_1hp_path = pathlib.Path(paths["models_1hp_dir"]) / model_name
+        model_1hp_path = pathlib.Path(paths["models"]) / model_name
         dataset_model_trained_with_prep_path = model_1hp_path
     
     dataset_raw_path = datasets_raw_domain_dir / dataset_name
@@ -83,7 +83,7 @@ def set_paths_2hpnn(dataset_name: str, preparation_case: str, model_name: str = 
         datasets_boxes_prep_path,
         ), inputs, destination_dir
 
-def extend_paths_for_problem(problem:str, default_raw_dir: pathlib.Path, destination_dir: pathlib.Path, datasets_prepared_dir: pathlib.Path)-> typing.Tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+def extend_paths_for_problem(problem:str, default_raw_dir: pathlib.Path, destination_dir: pathlib.Path, datasets_prepared_dir: pathlib.Path, dataset_name: str)-> typing.Tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     if problem in ["extend1", "extend2"]:
         default_raw_dir = default_raw_dir / "extend_plumes"
         datasets_prepared_dir = datasets_prepared_dir / "extend_plumes"

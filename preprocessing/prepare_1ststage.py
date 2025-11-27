@@ -20,7 +20,6 @@ from preprocessing.prepare_paths import Paths1HP, Paths2HP
 def prepare_dataset_for_1st_stage(paths: Paths1HP, settings: SettingsTraining, info_file: str = "info.yaml"):
     time_begin = time.perf_counter()
     info_file_path = settings.model / info_file
-
     if settings.problem == "extend1":
         cutlengthtrafo=True
     else:
@@ -63,7 +62,6 @@ def prepare_dataset(paths: Union[Paths1HP, Paths2HP], inputs: str, power2trafo: 
             Name of the raw data. This will also be the name of the new dataset.
         input_variables : str
             String of characters, each of which is either x, y, z, p, t, k, i, s, g.
-            TODO make g (pressure gradient cell-size independent?)
     """
     time_start = time.perf_counter()
     check_for_dataset(paths.raw_path)
