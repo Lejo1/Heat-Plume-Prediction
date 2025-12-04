@@ -100,7 +100,7 @@ def measure_losses_paper24(model: UNet, dataloaders: Dict[str, DataLoader], args
     if args["problem"] == "allin1": # and tmp_bool_cutouts:
         norm = dataloaders["train"].dataset.norm
         output_channels = dataloaders["train"].dataset.output_channels
-    elif args["problem"] in ["1hp", "2stages"]:
+    elif args["problem"] in ["1hp", "2stages", "extend"]:
         norm = dataloaders["train"].dataset.dataset.norm
         output_channels = dataloaders["train"].dataset.dataset.output_channels
     model.eval()

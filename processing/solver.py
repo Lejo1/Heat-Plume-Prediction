@@ -12,15 +12,15 @@ from torch.nn import Module, modules, MSELoss, L1Loss, HuberLoss, SmoothL1Loss
 from torch.optim import Adam, Optimizer, lr_scheduler, LBFGS
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torchmetrics.regression import MeanAbsolutePercentageError as MAPE
 from tqdm.auto import tqdm
 from copy import deepcopy
 
-from postprocessing.visualization import visualizations
+from utils.utils_args import save_yaml
 from processing.networks.unetVariants import UNetNoPad2
 from processing.networks.model import weights_init
-from utils.utils_args import save_yaml
 from processing.losses import CombiLoss, SSIMLoss, KLD_log, LinfLoss, IoULoss
-from torchmetrics.regression import MeanAbsolutePercentageError as MAPE
+from postprocessing.visualization import visualizations
 
 @dataclass
 class Solver(object):
@@ -63,7 +63,7 @@ class Solver(object):
         if self.optimizer_switch:
             self.epoch_switch_optimizer = int(0.9 * self.epoch_switch_optimizer)
 
-        epochs = tqdm(range(args["epochs"]), desc="epochs", disable=True)
+        epochs = tqdm(range(args["epochs"]), desc="epochs", disable=False)
         for epoch in epochs:
             try:
                 if epoch == self.epoch_switch_optimizer:
@@ -75,15 +75,19 @@ class Solver(object):
                 if epoch in self.lr_schedule.keys():
                     self.opt.param_groups[0]["lr"] = self.lr_schedule[epoch]
                     
+                # # re-construct dataloaders
+                # self.train_dataloader, self.val_dataloader = const_dataloaders(args, {"train": self.train_dataloader, "val": self.val_dataloader}).values()
+                
                 # Training
                 self.model.train()
                 train_epoch_loss, _ = self.run_epoch(self.train_dataloader, device) #, other_losses_train
 
                 # Validation
                 self.model.eval()
-                # _, other_losses_val = self.run_epoch(self.val_dataloader, device)
+                _, other_losses_val = self.run_epoch(self.val_dataloader, device)
                 # val_epoch_loss = other_losses_val["Huber"] # TODO change back? currently for realK
-                val_epoch_loss, _ = self.run_epoch(self.val_dataloader, device) #TODO used for randomK
+                val_epoch_loss = other_losses_val["MAE"] # TODO change back? currently for dummyK
+                # val_epoch_loss, _ = self.run_epoch(self.val_dataloader, device) #TODO used for randomK
 
                 # Logging
                 writer.add_scalar("train_loss", train_epoch_loss, epoch)
@@ -220,16 +224,17 @@ class Solver(object):
                 epoch, lr = line.split(",")
                 self.lr_schedule[int(epoch)] = float(lr)
 
-    def save_metrics_separate_yaml(self, destination: pathlib.Path, no_params:int, max_epochs:int, training_time:float, device: str = "cpu"):
-        # prepare data as dict
+    def save_metrics_separate_yaml(self, args: dict, training_time:float):
+        device = args["device"]
 
         self.model.eval()
         train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device) #other_losses_train
         val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device) #other_losses_val
 
+        # prepare data as dict
         metrics = {}
-        metrics["no_params"] = no_params
-        metrics["max_epochs"] = max_epochs
+        metrics["no_params"] = self.model.num_of_params()
+        metrics["max_epochs"] = args["epochs"]
         metrics["training_time [s]"] = training_time
         metrics["best_epoch"] = self.best_model_params["epoch"]
         metrics["train"] = other_losses_train
@@ -238,7 +243,7 @@ class Solver(object):
         metrics["val loss"] = val_epoch_loss #["val"]
 
         # save data as yaml
-        save_yaml(metrics, destination / "measurements.yaml")
+        save_yaml(metrics, args["destination"] / "measurements.yaml")
 
 
     def save_metrics_to_overall_csv(self, destination: pathlib.Path, no_params:int, max_epochs:int, training_time:float, device: str = "cpu"):

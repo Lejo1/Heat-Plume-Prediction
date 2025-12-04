@@ -1,67 +1,138 @@
+import optuna
+from optuna.trial import TrialState
 import argparse
 import os
 from pathlib import Path
 import torch
 import sys
+import logging
+import multiprocessing
+import numpy as np
+import torch
+from torch.nn import MSELoss, L1Loss
+from datetime import datetime
 
+from utils.utils_args import save_yaml, read_cla
 import utils.utils_args as ut
-import preprocessing.preprocessing as prep
-from processing.training import train
+from preprocessing.data_init import init_data
+from preprocessing.preprocessing import preprocessing as data_prep
+from processing.training import select_loss_function, train, init_model
+from processing.networks.unetVariants import UNetNoPad2, UNetHalfPad2
+from processing.networks.unet import UNet
+from processing.solver import Solver
+from postprocessing.visualization import visualizations
+from postprocessing.measurements import measure_losses_paper24
 
-def read_cla(path:str):
-    clas = ut.load_yaml(path / "command_line_arguments.yaml")
-    for path_typed_cla in ["data_prep", "data_raw", "destination", "model"]:
-        try:
-            if clas[path_typed_cla] is not None:
-                clas[path_typed_cla] = Path(clas[path_typed_cla])
-        except KeyError:
-            continue
+def run(trial):
+    config = ut.load_yaml(args["destination"] / "HPS_options.yaml")
+    run_name = trial.number
+    for key in config:
+        args[key] = trial.suggest_categorical(key, config[key]["values"])
 
-    return clas
+    # np.random.seed(1)
+    # torch.manual_seed(1)
+    multiprocessing.set_start_method("spawn", force=True)
+
+    # args["data_prep"] = f"/scratch/sgs/pelzerja/datasets_prepared/allin1/before_2025/{args['data_raw'].name} inputs_{args['inputs']} outputs_{'xy' if len(args['inputs']) == 2 else 't'}"
+    # print(args["data_prep"])
+
+    # TODO unnecessary?
+    # ut.make_paths(args) # and check if data / model exists
+    # ut.save_yaml(args, args["destination"] / "command_line_arguments.yaml")
+
+    # data
+    data_prep(args) # and save info.yaml in model folder
+    try:
+        input_channels, output_channels, dataloaders = init_data(args)
+
+        model = init_model(args, input_channels, output_channels)
+
+        if args["case"] in ["train", "finetune"]:
+            loss = select_loss_function(args)
+            # TODO change val-loss in solver (realK: Huber, dummyK:mae)
+            solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), optimizer_switch=args["optimizer_switch"], learning_rate=float(args["lr"]))
+            training_time = datetime.now()
+            try:
+                solver.load_lr_schedule(args["destination"] / "learning_rate_history.csv")
+                val_loss = solver.train(args, optuna_trial=trial)
+            except KeyboardInterrupt:
+                logging.warning(f"Manually stopping training early with best model found in epoch {solver.best_model_params['epoch']}.")
+                val_loss = solver.best_model_params["loss"]
+                
+            solver.save_lr_schedule(args["destination"] / "learning_rate_history.csv")
+            print("Training finished")
+
+            # save model and train metrics
+            training_time = datetime.now() - training_time
+            model.save(args["destination"] / "models", f"{run_name}.pt")
+            # solver.save_metrics_to_overall_csv(args["destination"], model.num_of_params(), args["epochs"], training_time, args["device"])
+
+        if args["case"] == "test":
+            visualizations(model, dataloaders["val"], args, plot_path=args["destination"] / "val", amount_datapoints_to_visu=1, pic_format="png")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return 0.1
+
+    # Clear up memory
+    del model
+    del dataloaders
+    torch.cuda.empty_cache()
+
+    return val_loss
+
+def get_vT_case(output_channels):
+    if output_channels == 1:
+        vT_case = "temperature"
+    elif output_channels == 2:
+        vT_case = "velocities"
+    return vT_case
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--problem", type=str, choices=["1hp", "2stages", "allin1", "extend", "test"], default="allin1")
-    parser.add_argument("--data_raw", type=str, default="dataset_small_10dp_varyK", help="Name of the raw dataset (without inputs)")
-    parser.add_argument("--data_prep", type=str, default=None)
-    parser.add_argument("--allin1_prepro_n_case", type=str, choices=["gt", "unet", "cdmlp"], default=None, help="Case for preprocessing of allin1")
-    parser.add_argument("--inputs", type=str, default="gksi") #e.g. "gki", "gksi100", "ogksi1000_finetune", "t", "lmi", "lmik","lmikp", ...
-    parser.add_argument("--outputs", type=str, default="t") # e.g. "t" for allin1 step2; "xy" for allin1 step1; "xyt" for preparation
-    parser.add_argument("--len_box", type=int, default=64) # for 1hp:256, extend:128?
-    parser.add_argument("--skip_per_dir", type=int, default=32)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--case", type=str, choices=["train", "test", "finetune"], default="train")
-    parser.add_argument("--model", type=str, default=None) # required for testing or finetuning
     parser.add_argument("--destination", type=str, default=None)
-    parser.add_argument("--visualize", type=bool, default=False)
-    parser.add_argument("--device", type=str, default="3", help="cuda device number or 'cpu'")
-    parser.add_argument("--notes", type=str, default=None)
+    parser.add_argument("--hsearch", type=bool, default=False)
+    parser.add_argument("--problem", type=str, choices=["1hp", "2stages", "allin1", "extend", "test"], default="allin1")
     args = parser.parse_args()
     args = vars(args)
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = args["device"] if not args["device"]=="cpu" else "" #e.g. "1"
-    args["device"] = torch.device(f"cuda:{args['device']}" if not args["device"]=="cpu" else "cpu")
-
-
-    cheat = True # read in cla.yaml as settings-file for training
-    if cheat:
-        args["destination"] = Path(f"/scratch/sgs/pelzerja/runs/{args['problem']}") / args["destination"] #/sgs
-        current_destination = args["destination"]
-        args = read_cla(args["destination"])
-        args["destination"] = current_destination # just to make sure that nothing is overwritten
-
-    else: # the normal way
-        ut.assertions_args(args)
-        # TODO eingerückt oder nicht??
+    hyperparameter_search = args["hsearch"]
     
-    log_file = open(args["destination"]/"output.log", "w")
-    sys.stdout, sys.stderr = log_file, log_file
+    args["destination"] = Path(f"/scratch/sgs/pelzerja/runs/{args['problem']}") / args["destination"]
+    current_destination = args["destination"] # just to make sure that nothing is overwritten
+    args = read_cla(args["destination"])
+    args["destination"] = current_destination
+    
+    # log_file = open(args["destination"]/"output.log", "w")
+    # sys.stdout, sys.stderr = log_file, log_file
 
-    ut.make_paths(args) # and check if data / model exists
-    ut.save_yaml(args, args["destination"] / "command_line_arguments.yaml")
+    if hyperparameter_search:
+        print("Study name: ", args["destination"])
+        study = optuna.create_study(direction="minimize", storage=f"sqlite:////scratch/sgs/pelzerja/runs/{args['problem']}/hps_sparnn.db", study_name="2025_12_04", load_if_exists=True)
+        study.optimize(run, n_trials=50)
 
-    # prepare data
-    model = train(args)
+        pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+        complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
 
+        print("Study statistics: ")
+        print("  Number of finished trials: ", len(study.trials))
+
+        print("Best trial:")
+        trial = study.best_trial
+        print("  Value: ", trial.value)
+
+        print("  Params: ")
+        for key, value in trial.params.items():
+            print("    {}: {}".format(key, value))
+
+    else:
+        print("Running with fixed hyperparameters")
+        model = train(args)
+
+    # log_file.close()
+    
     print("Done")
-    log_file.close()
+
+
+# 4 workers: 40 minutes
+# 1 worker: 40 minutes
+# 0 workers: 3minutes

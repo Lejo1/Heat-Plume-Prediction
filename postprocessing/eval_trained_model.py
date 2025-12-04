@@ -14,6 +14,7 @@ from postprocessing.metric_connectivity import connectivityLoss
 
 def preparation(PATH_current_data: Path, PATH_current_model: Path, PATH_destination: Path, scaling:bool=False):
     # load data for dummyK, step1 (predV)
+    #TODO wont be working because inputs to init_data changed!!
 
     args = load_yaml(PATH_current_model / "command_line_arguments.yaml")
     args["data_prep"] = PATH_current_data

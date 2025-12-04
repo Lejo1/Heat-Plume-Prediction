@@ -4,6 +4,17 @@ from typing import List, Union
 from torch import Tensor
 import numpy as np
 
+def read_cla(path:str):
+    clas = load_yaml(path / "command_line_arguments.yaml")
+    for path_typed_cla in ["data_prep", "data_raw", "destination", "model"]:
+        try:
+            if clas[path_typed_cla] is not None:
+                clas[path_typed_cla] = Path(clas[path_typed_cla])
+        except KeyError:
+            continue
+
+    return clas
+
 def assertions_args(args:dict):
     if args["case"] in ["test", "finetune"]:
         assert args["model"] is not None, "Model name required for testing or finetuning"
