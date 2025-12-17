@@ -3,6 +3,7 @@ paths_sdf.yaml
 
 datasets_prepared/
 cdmlp/
+diff_streamlines/
 lightning_logs/
 wandb/
 

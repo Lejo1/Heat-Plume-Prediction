@@ -15,7 +15,7 @@ from postprocessing.visualization import visualizations
 from postprocessing.measurements import measure_losses_paper24
 from utils.utils_args import save_yaml, load_yaml
 
-def train(args: dict):
+def train_old(args: dict):
     np.random.seed(1)
     torch.manual_seed(1)
     multiprocessing.set_start_method("spawn", force=True)
@@ -95,24 +95,12 @@ def train_read_hyperparams(args: dict):
     args = load_hyperparams(args)
     data_prep(args) # and save info.yaml in model folder
     
-    input_channels, output_channels, dataloaders = init_data(args, batchsize=args["batchsize"], tmp_bool_cutouts=args["bool_cutouts"], ORDER_DATA=args["order_data"])
+    input_channels, output_channels, dataloaders = init_data(args,)
 
-    if args["problem"] in ["allin1"]:
-        if input_channels == 3 and output_channels == 1:
-            model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
-        else:
-            model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
-    elif args["problem"] in ["1hp", "2stages", "test"]:
-        model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
-    model.to(args["device"])
-    
-    if args["case"] in ["test", "finetune"]:
-        model.load(args["model"], args["device"])
-    if args["case"] == "test":
-        model.eval()
+    model = init_model(args, input_channels, output_channels)
 
     if args["case"] in ["train", "finetune"]:
-        loss = select_loss_function(args)
+        loss = init_loss_function(args)
         # TODO change val-loss in solver (realK: Huber, dummyK:mae)
         solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), optimizer_switch=args["optimizer_switch"], learning_rate=float(args["lr"]))
         training_time = datetime.now()
@@ -133,15 +121,32 @@ def train_read_hyperparams(args: dict):
 
     # postprocessing
     # save_all_measurements(args, len(dataloaders["val"].dataset), times={}, solver=solver) #, errors)
-    vT_case = "temperature" if output_channels == 1 else "velocities"
-    measure_losses_paper24(model, dataloaders, args, vT_case=vT_case, tmp_bool_cutouts=args["bool_cutouts"])
+    measure_losses_paper24(model, dataloaders, args, output_channels, tmp_bool_cutouts=args["bool_cutouts"])
 
     case = "val"
     visualizations(model, dataloaders[case], args, plot_path=args["destination"] / case, amount_datapoints_to_visu=1, pic_format="png")
 
     return model
 
-def select_loss_function(args):
+def init_model(args, input_channels, output_channels):
+    if args["problem"] in ["allin1"]:
+        if input_channels == 3 and output_channels == 1: # end-to-end, want to use same data-split
+            model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
+        else:
+            model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
+    elif args["problem"] in ["1hp", "2stages", "test"]:
+        model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
+    elif args["problem"] in ["extend"]:
+        model = UNetHalfPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], activation=args["activation_fct"], norm=args["norm"]).float()
+    model.to(args["device"])
+        
+    if args["case"] in ["test", "finetune"]:
+        model.load(args["model"], args["device"])
+    if args["case"] == "test":
+        model.eval()
+    return model
+
+def init_loss_function(args):
     if args["train_loss"].lower() == "mae":
         loss = L1Loss()
     elif args["train_loss"].lower() == "mse":

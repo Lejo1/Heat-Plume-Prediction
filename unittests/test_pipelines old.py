@@ -1,6 +1,6 @@
 import shutil
 
-from processing.training import train
+from processing.training import train_old
 
 def test_main_1ststage():
     args = {
@@ -20,7 +20,7 @@ def test_main_1ststage():
         "len_box" :             256,
         "skip_per_dir" :        0,
     }
-    train(args)
+    train_old(args)
     shutil.rmtree("runs/1hpnn/unittest", ignore_errors=True)
 
 
@@ -67,7 +67,7 @@ def test_main_allin1():
         "len_box" :             256,
         "skip_per_dir" :        32,
     }
-    train(args)
+    train_old(args)
     shutil.rmtree("runs/allin1/unittest", ignore_errors=True)
 
 
@@ -89,5 +89,5 @@ def test_main_extend():
         "len_box" :             256,
         "skip_per_dir" :        16,
     }
-    train(args)
+    train_old(args)
     shutil.rmtree("runs/extend/unittest", ignore_errors=True)

@@ -1,7 +1,7 @@
 import os
 
 os.environ["KERAS_BACKEND"] = "torch"
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 # TODO set cuda device *before* loading any keras modules
 import keras
 from callbacks import CustomTensorboard, SaveOutputsCallback
@@ -9,7 +9,7 @@ from keras import ops
 from pathlib import Path
 
 from cdmlp.models import CompleteModel
-from cdmlp.util import load_and_split, manual_scheduler
+from cdmlp.util import load_and_split, load_and_split_constP, manual_scheduler
 from utils.utils_args import save_yaml
 
 
@@ -28,7 +28,7 @@ def build_model(height, width):
 
     dist_model = keras.Sequential(
         [
-            keras.layers.Input(shape=(height, width, 5)), 
+            keras.layers.Input(shape=(height, width, 5)),
             keras.layers.Conv2D(16, 3, activation="leaky_relu"),
             keras.layers.Conv2D(4, 3, activation="leaky_relu"),
         ],
@@ -58,16 +58,21 @@ class RelativeLoss(keras.Loss):
 
 
 def train():
-    run_name = "cdmlp new_vary_perm_data_vary_dist mae+mono-loss"
-    data_path = "/scratch/sgs/pelzerja/datasets_prepared/1hp/dataset_small_10000dp_varyK_v3_part2 inputs_gksi"
-    (train_input, train_output), (val_input, val_output), info = load_and_split(
-        # "/scratch/sgs/pelzerja/datasets_prepared/1hp/dataset_small_10000dp_varyK_v3_part1 inputs_ksi plus_dummy_g",
+    run_name = "cdmlp scenario2a overfit" # vary_k
+    data_path = "/scratch/sgs/pelzerja/datasets_prepared/1hp/dataset_small_10dp_varyK_v3_part1 inputs_sik"
+    # run_name = "cdmlp scenario2a mae+mono-loss 7000dp v1_part1_tmp" # vary_k
+    # # run_name = "cdmlp const_k_scenario2 mae+mono-loss 1000dp" # const_k
+    # # data_path = "/scratch/sgs/pelzerja/datasets_prepared/1hp/dataset_small_10000dp_varyK_v3_part1 inputs_gksi outputs_t" # vary_k
+    # data_path = "/scratch/sgs/pelzerja/datasets_prepared/1hp/dataset_small_10dp_varyK_v3_part1 inputs_sik"
+    # data_path = "/scratch/sgs/pelzerja/datasets_prepared/diss/1hp/dataset_2d_small_1000dp inputs_gksi outputs_t" # const_k
+    (train_input, train_output), (val_input, val_output), info = load_and_split_constP(
         data_path,
-        # "/scratch/sgs/pelzerja_share/datasets_prepared/benchmark_dataset_2d_1000dp_vary_perm inputs_gksi",
         dir="",
         augment=True,
+        new_data=True,
     )
-    save_path = Path("runs") / "cdmlp" / run_name
+
+    save_path = Path("runs") / run_name
     save_path.mkdir(exist_ok=True, parents=True)
     save_yaml(info, save_path / "info.yaml")
     save_yaml({"data": data_path}, save_path / "command.yaml")
@@ -94,7 +99,7 @@ def train():
             CustomTensorboard(save_path.parent, name=save_path.name),
             # SaveOutputsCallback(inputs_train_vary[:1], outputs_train_vary[:1]),
             # keras.callbacks.LearningRateScheduler(manual_scheduler(run_name)),
-            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=20, verbose=1),
+            keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=1000, verbose=1, min_lr=1e-6), #patience=20
             keras.callbacks.ModelCheckpoint(save_path / "best_model.keras"),
             # keras.callbacks.BackupAndRestore("checkpoints/complete_vary/backup"),
         ],

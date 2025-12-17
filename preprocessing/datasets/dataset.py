@@ -8,7 +8,7 @@ from preprocessing.transforms import NormalizeTransform
 from utils.utils_args import get_run_ids_from_prep
 
 class DatasetBasis(Dataset):
-    def __init__(self, path:str, box_size:int=None, idx:int=None):
+    def __init__(self, path:str, box_size:int=None):
         Dataset.__init__(self)
         self.path = pathlib.Path(path)
         self.info = self.__load_info()

@@ -3,36 +3,8 @@ from torch import cat, tensor
 
 from processing.networks.unet import UNet
 
-class PaddingCircular(nn.Module):
-    def __init__(self, kernel_size, direction="both"):
-        super().__init__()
-        self.pad_len = kernel_size//2
-        self.direction = direction
-
-    def forward(self, x:tensor) -> tensor:
-        if self.direction == "both":
-            padding_vector = (self.pad_len,)*4
-            result = nn.functional.pad(x, padding_vector, mode='circular')    
-
-        elif self.direction == "horizontal":
-            padding_vector = (self.pad_len,)*2 + (0,)*2
-            result = nn.functional.pad(x, padding_vector, mode='circular')    
-            padding_vector = (0,)*2 + (self.pad_len,)*2  
-            result = nn.functional.pad(result, padding_vector, mode='constant')     # or 'reflect'?
-
-        elif self.direction == "vertical":
-            padding_vector = (0,)*2 + (self.pad_len,)*2
-            result = nn.functional.pad(x, padding_vector, mode='circular')    
-            padding_vector = (self.pad_len,)*2 + (0,)*2
-            result = nn.functional.pad(result, padding_vector, mode='constant')
-
-        elif self.direction == "none":
-            padding_vector = (self.pad_len,)*4
-            result = nn.functional.pad(x, padding_vector, mode='constant')    
-        return result
-    
 class UNetHalfPad2(UNet):
-    def __init__(self, in_channels=2, out_channels=1, init_features=32, depth=3, kernel_size=5, activation="relu", norm="batchnorm"):
+    def __init__(self, in_channels:int=2, out_channels:int=1, init_features:int=32, depth:int=3, kernel_size:int=5, activation:str="relu", norm:str="batchnorm"):
         super().__init__()
         features = init_features
         activation = get_activation_fct(activation)
@@ -161,6 +133,34 @@ class OneSidePadding(nn.Module):
         elif self.direction == "horizontal":
             padding_vector = (self.pad_len,)*2 + (0,)*2
             result = nn.functional.pad(x, padding_vector, mode='constant')
+        return result
+    
+class PaddingCircular(nn.Module):
+    def __init__(self, kernel_size, direction="both"):
+        super().__init__()
+        self.pad_len = kernel_size//2
+        self.direction = direction
+
+    def forward(self, x:tensor) -> tensor:
+        if self.direction == "both":
+            padding_vector = (self.pad_len,)*4
+            result = nn.functional.pad(x, padding_vector, mode='circular')    
+
+        elif self.direction == "horizontal":
+            padding_vector = (self.pad_len,)*2 + (0,)*2
+            result = nn.functional.pad(x, padding_vector, mode='circular')    
+            padding_vector = (0,)*2 + (self.pad_len,)*2  
+            result = nn.functional.pad(result, padding_vector, mode='constant')     # or 'reflect'?
+
+        elif self.direction == "vertical":
+            padding_vector = (0,)*2 + (self.pad_len,)*2
+            result = nn.functional.pad(x, padding_vector, mode='circular')    
+            padding_vector = (self.pad_len,)*2 + (0,)*2
+            result = nn.functional.pad(result, padding_vector, mode='constant')
+
+        elif self.direction == "none":
+            padding_vector = (self.pad_len,)*4
+            result = nn.functional.pad(x, padding_vector, mode='constant')    
         return result
     
 def get_activation_fct(name:str):

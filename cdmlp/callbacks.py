@@ -1,6 +1,6 @@
 import keras
 import datetime
-from tensorboardX import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 import shutil
 import logging

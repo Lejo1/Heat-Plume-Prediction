@@ -58,7 +58,7 @@ class DatasetExtend(DatasetBasis):
 
     def calc_gap_out_size(self, kernel_size:int, n_blocks:int, n_convs_per_block:int):
         # gap-formula: offset = gap = zero-adding width
-        # TODO check against Julius implementation
+        # Julius' implementation: additionally: padding and stride inputs
         out_size = copy(self.box_size)
         c = kernel_size - 1 # loss per convolution
         c_block = c * n_convs_per_block # loss for all convs per block

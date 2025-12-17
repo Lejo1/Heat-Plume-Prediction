@@ -4,17 +4,24 @@ import torch
 import logging
 from keras import ops
 from utils.utils_args import load_yaml
+from copy import deepcopy
+import matplotlib.pyplot as plt
 
 def load_dataset(
     dataset_name="benchmark_dataset_2d_100datapoints_5years",
     dir="data",
     inputs_map=None,
     outputs_map=None,
+    new_data:bool=False,
+    ordered_data:bool=False,
 ):
     dataset_path = Path(dir) / dataset_name
     inputs_path = dataset_path / "Inputs"
     outputs_path = dataset_path / "Labels"
     available_inputs = list(file.name for file in inputs_path.iterdir())
+    if ordered_data:
+        available_inputs = sorted(available_inputs, key=lambda x: int(x.split("_")[-1].split(".")[0]))
+        print(available_inputs)
     all_inputs = []
     all_outputs = []
     for name in tqdm(available_inputs):
@@ -26,25 +33,34 @@ def load_dataset(
             if outputs_map is not None:
                 new_output = outputs_map(new_output)
         except Exception as e:
-            logging.warn(f"Could not load {name}: {e}")
+            logging.warning(f"Could not load {name}: {e}")
         else:
             all_inputs.append(new_input)
             all_outputs.append(new_output)
     all_inputs = torch.stack(all_inputs)
     all_outputs = torch.stack(all_outputs)
     # we want channels last
-    all_inputs = all_inputs.permute(0, 2, 3, 1)
-    all_outputs = all_outputs.permute(0, 2, 3, 1)
+    if not new_data:
+        all_inputs = all_inputs.permute(0, 2, 3, 1)
+        all_outputs = all_outputs.permute(0, 2, 3, 1)
+    else:
+        all_inputs = all_inputs.permute(0, 3, 2, 1)
+        all_outputs = all_outputs.permute(0, 3, 2, 1)
     return ops.convert_to_tensor(all_inputs), ops.convert_to_tensor(all_outputs)
 
 
-def load_and_split(dataset_name, dir="data", split=0.95, augment=False):
+def load_and_split(dataset_name, dir="data", split=0.95, augment=False, new_data:bool=False):
     info = load_yaml(Path(dir) / dataset_name / "info.yaml")
     pos_hp = info["PositionLastHP"][:2][::-1]
-    raw_inputs, raw_outputs = load_dataset(
-        dataset_name, dir=dir, inputs_map=lambda x: x[:2]
+    index_perm = info["Inputs"]["Permeability X [m^2]"]["index"]
+    start_field = 0
+    if False:
+        index_perm -= 1
+        start_field = 1
+    raw_inputs, raw_labels = load_dataset(
+        dataset_name, dir=dir, inputs_map=lambda x: x[start_field:2], new_data=new_data
     )
-    input_perm_log = ops.log(raw_inputs[..., info["Inputs"]["Permeability X [m^2]"]["index"]]+ops.exp(1))-1
+    input_perm_log = ops.log(raw_inputs[...,index_perm]+ops.exp(1))-1
     perm_log_min = ops.min(input_perm_log)
     perm_log_max = ops.max(input_perm_log)
     input_perm_log = (input_perm_log - perm_log_min) / (perm_log_max - perm_log_min)
@@ -52,6 +68,8 @@ def load_and_split(dataset_name, dir="data", split=0.95, augment=False):
 
     number, height, width, channels = raw_inputs.shape
 
+    if new_data:
+        pos_hp =  pos_hp[::-1]
     coordinate_origin_vary = ops.convert_to_tensor(pos_hp) # with orig dataset:[23,9]
     total_size = number
     if augment:
@@ -63,7 +81,91 @@ def load_and_split(dataset_name, dir="data", split=0.95, augment=False):
         inputs[..., :2] = coords[None, ...]
         inputs[..., 2:] = raw_inputs
 
-        outputs = raw_outputs
+        labels = raw_labels
+        positions[:] = coordinate_origin_vary[None, :]
+    else:
+        c = coordinate_origin_vary
+        c_flipped_x = ops.convert_to_tensor([c[0], width - c[1] - 1])
+        c_flipped_y = ops.convert_to_tensor([height - c[0] - 1, c[1]])
+        c_flipped_both = ops.convert_to_tensor([height - c[0] - 1, width - c[1] - 1])
+        coords_original = coordinates(height, width, c)
+
+        coords_flipped_x = coordinates(height, width, c_flipped_x)
+        coords_flipped_y = coordinates(height, width, c_flipped_y)
+        coords_flipped_both = coordinates(height, width, c_flipped_both)
+        positions[:number] = c[None, :]
+        positions[number : 2 * number] = c_flipped_x[None, :]
+        positions[2 * number : 3 * number] = c_flipped_y[None, :]
+        positions[3 * number :] = c_flipped_both[None, :]
+        inputs[:number, ..., :2] = coords_original[None, ...]
+        inputs[number : 2 * number, ..., :2] = coords_flipped_x[None, ...]
+        inputs[2 * number : 3 * number, ..., :2] = coords_flipped_y[None, ...]
+        inputs[3 * number :, ..., :2] = coords_flipped_both[None, ...]
+        inputs[:number, ..., 2:] = raw_inputs
+        inputs[number : 2 * number, ..., 2:] = ops.flip(raw_inputs, axis=-2)  # flip x
+        inputs[2 * number : 3 * number, ..., 2:] = ops.flip(
+            raw_inputs, axis=-3
+        )  # flip y
+        inputs[3 * number :, ..., 2:] = ops.flip(raw_inputs, axis=(-2, -3))  # flip both
+        # now hackily invert the pressure gradient for the y flips
+        inputs[2 * number :, ..., 2] *= -1
+
+        os = raw_labels.shape
+        labels = ops.empty((number * 4, *os[1:]))
+        labels[:number] = raw_labels
+        labels[number : 2 * number] = ops.flip(raw_labels, axis=-2)  # flip x
+        labels[2 * number : 3 * number] = ops.flip(raw_labels, axis=-3)  # flip y
+        labels[3 * number :] = ops.flip(raw_labels, axis=(-2, -3))  # flip both
+
+    if split is None:
+        return {"fields": inputs, "pump_indices": positions}, labels, info
+    split = 0.95
+    n_split = int(split * total_size)
+    inputs_train, inputs_val = inputs[:n_split], inputs[n_split:]
+    outputs_train, outputs_val = (
+        labels[:n_split],
+        labels[n_split:],
+    )
+    positions_train = positions[:n_split]
+    positions_val = positions[n_split:]
+    # now inputs is: y,x, pressure gradient, permeability
+    logging.debug(f"{inputs.shape=}")
+    logging.debug(f"{labels.shape=}")
+    logging.debug(f"{inputs.device=}")
+    return ({"fields": inputs_train, "pump_indices": positions_train},outputs_train,), ({"fields": inputs_val, "pump_indices": positions_val}, outputs_val), info
+
+
+def load_and_split_constP(
+    dataset_name, dir="data", split=0.95, augment=False, new_data:bool=False
+):
+    info = load_yaml(Path(dir) / dataset_name / "info.yaml")
+    pos_hp = info["PositionLastHP"][:2][::-1]
+    raw_inputs, raw_labels = load_dataset(
+        dataset_name, dir=dir, inputs_map=lambda x: x[2:], new_data=new_data, ordered_data=True,
+    )
+    index_perm = 0 #info["Inputs"]["Permeability X [m^2]"]["index"] - -changed because cut out s,i
+    input_perm_log = ops.log(raw_inputs[...,index_perm]+ops.exp(1))-1
+    perm_log_min = ops.min(input_perm_log)
+    perm_log_max = ops.max(input_perm_log)
+    input_perm_log = (input_perm_log - perm_log_min) / (perm_log_max - perm_log_min)
+    dummy_g = ops.ones_like(raw_inputs[...,index_perm])
+    raw_inputs = ops.concatenate((dummy_g[..., None], raw_inputs, input_perm_log[..., None]), axis=-1)
+
+    number, height, width, channels = raw_inputs.shape
+    # if new_data:
+    #     pos_hp =  pos_hp[::-1]
+    coordinate_origin_vary = ops.convert_to_tensor(pos_hp) # with orig dataset:[23,9]
+    total_size = number
+    if augment:
+        total_size *= 4
+    positions = ops.empty((total_size, 2), dtype=int)
+    inputs = ops.empty((total_size, height, width, channels + 2))
+    if not augment:
+        coords = coordinates(height, width, coordinate_origin_vary)
+        inputs[..., :2] = coords[None, ...]
+        inputs[..., 2:] = raw_inputs
+
+        labels = raw_labels
         positions[:] = coordinate_origin_vary[None, :]
     else:
         c = coordinate_origin_vary
@@ -88,30 +190,29 @@ def load_and_split(dataset_name, dir="data", split=0.95, augment=False):
             raw_inputs, axis=-3
         )  # flip y
         inputs[3 * number :, ..., 2:] = ops.flip(raw_inputs, axis=(-2, -3))  # flip both
-        # now hackily invert the pressure gradient for the y flips
-        inputs[2 * number :, ..., 2] *= -1
+        inputs[number : 2 * number, ..., 2] *= -1 # hackily invert the pressure gradient for the y flips
+        inputs[3 * number :, ..., 2] *= -1 # hackily invert the pressure gradient for the y flips
 
-        os = raw_outputs.shape
-        outputs = ops.empty((number * 4, *os[1:]))
-        outputs[:number] = raw_outputs
-        outputs[number : 2 * number] = ops.flip(raw_outputs, axis=-2)  # flip x
-        outputs[2 * number : 3 * number] = ops.flip(raw_outputs, axis=-3)  # flip y
-        outputs[3 * number :] = ops.flip(raw_outputs, axis=(-2, -3))  # flip both
+        os = raw_labels.shape
+        labels = ops.empty((number * 4, *os[1:]))
+        labels[:number] = raw_labels
+        labels[number : 2 * number] = ops.flip(raw_labels, axis=-2)  # flip x
+        labels[2 * number : 3 * number] = ops.flip(raw_labels, axis=-3)  # flip y
+        labels[3 * number :] = ops.flip(raw_labels, axis=(-2, -3))  # flip both
 
     if split is None:
-        return {"fields": inputs, "pump_indices": positions}, outputs, info
+        return {"fields": inputs, "pump_indices": positions}, labels, info
     split = 0.95
     n_split = int(split * total_size)
     inputs_train, inputs_val = inputs[:n_split], inputs[n_split:]
     outputs_train, outputs_val = (
-        outputs[:n_split],
-        outputs[n_split:],
+        labels[:n_split],
+        labels[n_split:],
     )
     positions_train = positions[:n_split]
     positions_val = positions[n_split:]
-    # now inputs is: y,x, pressure gradient, permeability
     logging.debug(f"{inputs.shape=}")
-    logging.debug(f"{outputs.shape=}")
+    logging.debug(f"{labels.shape=}")
     logging.debug(f"{inputs.device=}")
     return ({"fields": inputs_train, "pump_indices": positions_train},outputs_train,), ({"fields": inputs_val, "pump_indices": positions_val}, outputs_val), info
 
@@ -141,7 +242,7 @@ def coordinates(
         ops.linspace(
             0, 1 * height / training_height, height * super_resolution, endpoint=False
         )
-        - origin[0] / training_height
+        - origin[0] / training_height 
     )
     x_range = (
         ops.linspace(

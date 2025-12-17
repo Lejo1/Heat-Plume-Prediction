@@ -86,13 +86,14 @@ def measure_loss(model: UNet, dataloader: DataLoader, device: str, loss_func: mo
             "mean absolute error": mae_loss, "mean absolute error in [°C]": mae_closs,
             }
 
-def measure_losses_paper24(model: UNet, dataloaders: Dict[str, DataLoader], args: dict, vT_case: str = "temperature", tmp_bool_cutouts:bool=True):
+def measure_losses_paper24(model: UNet, dataloaders: Dict[str, DataLoader], args: dict, output_channels: int, tmp_bool_cutouts:bool=True):
     '''
     function to measure the losses for the paper24
     ATTENTION! not robust, expects vT-case to be "temperature" or "velocities" and
     sets the number of outputs accordingly (1 or 2)
     also: calculates the pbt_threshold only for temperature
     '''
+    vT_case = "temperature" if output_channels == 1 else "velocities"
     if vT_case == "temperature":
         pbt_thresholds = [0.1, 1] # [°C] # only relevant for temperature
     
@@ -100,7 +101,7 @@ def measure_losses_paper24(model: UNet, dataloaders: Dict[str, DataLoader], args
     if args["problem"] == "allin1": # and tmp_bool_cutouts:
         norm = dataloaders["train"].dataset.norm
         output_channels = dataloaders["train"].dataset.output_channels
-    elif args["problem"] in ["1hp", "2stages"]:
+    else:
         norm = dataloaders["train"].dataset.dataset.norm
         output_channels = dataloaders["train"].dataset.dataset.output_channels
     model.eval()

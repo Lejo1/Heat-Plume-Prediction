@@ -4,7 +4,6 @@ from cdmlp.util import coordinates, almost_rectangle_sdf
 from cdmlp.layers import ValuesAroundPump, ApplyToImage
 import math
 
-
 class CompleteModel(keras.models.Model):
     def __init__(
         self,
@@ -31,9 +30,7 @@ class CompleteModel(keras.models.Model):
             name="Coordinate Model",
         )
         self.apply_to_image = ApplyToImage(self.nerf, name="Nerf wrapper")
-        self.values_around_pump = ValuesAroundPump(
-            name="Values around pump"
-        )
+        self.values_around_pump = ValuesAroundPump(name="Values around pump")
 
     def call(self, input_dict):
         global_coords = self.local_to_global.call(input_dict)
@@ -59,6 +56,16 @@ class CompleteModel(keras.models.Model):
     def compute_output_shape(self, input_dict):
         return input_dict["fields"][:-1] + (1,)
 
+    def get_build_config(self):
+        return {
+            "nerf": self.nerf,
+            "dist_model": self.dist_model,
+            "edge_size": self.edge_size,
+            "oob_weight": self.oob_weight,
+            "ortho_weight": self.ortho_weight,
+            "mono_weight": self.mono_weight,
+        }
+
     def get_config(self):
         config = super().get_config()
         config.update(
@@ -71,6 +78,13 @@ class CompleteModel(keras.models.Model):
             }
         )
         return config
+    
+    # def build_from_config(self, config):
+    #     config["nerf"] = keras.saving.deserialize_keras_object(config["nerf"])
+    #     config["dist_model"] = keras.saving.deserialize_keras_object(
+    #         config["dist_model"]
+    #     )
+    #     return self(**config)
 
     @classmethod
     def from_config(cls, config):
@@ -79,36 +93,6 @@ class CompleteModel(keras.models.Model):
             config["dist_model"]
         )
         return cls(**config)
-
-
-class ApplyToImage(keras.models.Model):
-    """
-    Applies a scalar model (batch, channels_in) -> (batch, 1) to an image of shape (batch, height, width, channels)
-    """
-
-    def __init__(self, model, **kwargs):
-        super().__init__(**kwargs)
-        self.model = model
-
-    def call(self, inputs):
-        shape = inputs.shape
-        inputs = inputs.reshape((-1, shape[-1]))
-        output_channels = self.model.output_shape[-1]
-        return self.model(inputs).reshape((*shape[:-1], output_channels))
-
-    def compute_output_shape(self, input_shape):
-        return (*input_shape[:-1], 1)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"model": self.model})
-        return config
-
-    @classmethod
-    def from_config(cls, config):
-        config["model"] = keras.saving.deserialize_keras_object(config["model"])
-        return cls(**config)
-
 
 class GlobalCoordinate(keras.models.Model):
     def __init__(
@@ -162,13 +146,14 @@ class GlobalCoordinate(keras.models.Model):
     
     def call(self, input_dict):
     # input has shape (batch, height, width, channels), channels should be (2,2)
+    # output has 4 channels: dx/dx, dx/dy,dy/dx,dy/dy (or other order)
         distortions = self.model(input_dict["fields"])
         batch, height, width, channels = distortions.shape
         deltas = ops.reshape(distortions, (*distortions.shape[:-1], 2, 2))
         coordinates = ops.zeros((batch, height, width, 2))
-        coordinates += ops.cumsum(deltas[..., 1, :], axis=-2)
-        coordinates += ops.cumsum(deltas[..., 0, :], axis=-3)
-        for index, (oy, ox) in enumerate(input_dict["pump_indices"]):
+        coordinates += ops.cumsum(deltas[..., 1, :], axis=-2) #HÄ
+        coordinates += ops.cumsum(deltas[..., 0, :], axis=-3) #HÄ
+        for index, (oy, ox) in enumerate(input_dict["pump_indices"]): #TODO wrong stuff in pump_indices??? TODO also when reducing size, the pump index is wrong??
             coordinates[index, ...] -= coordinates[index, oy, ox, :].clone()
 
         self.add_loss(self.oob_loss(coordinates) * self.oob_weight)
