@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.unet import UNet
-from processing.pipelines.extend_plumes_old import infer_nopad, update_params
+# from old.extend_plumes_old import infer_nopad, update_params
 from postprocessing.visu_utils import aligned_colorbar
 import postprocessing.cmap_jp
 
@@ -92,14 +92,14 @@ def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datap
     settings_pic = {"format": pic_format,
                     "dpi": 1200,}
     
-    if args["problem"] == "extend":
-        params = {"start_visu" : 0,
-                    "end_visu" : 1000,
-                    "start_input_box" : 64,
-                    "skip_in_field" : 32,
-                    "rm_boundary_l" : 16,
-                    "rm_boundary_r" : int(16/2),}
-        params = update_params(params, args["model"], temp_norm = norm)
+    # if args["problem"] == "extend":
+    #     params = {"start_visu" : 0,
+    #                 "end_visu" : 1000,
+    #                 "start_input_box" : 64,
+    #                 "skip_in_field" : 32,
+    #                 "rm_boundary_l" : 16,
+    #                 "rm_boundary_r" : int(16/2),}
+    #     params = update_params(params, args["model"], temp_norm = norm)
 
     current_id = 0
     for inputs, labels in dataloader:
@@ -111,8 +111,8 @@ def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datap
             x = inputs[datapoint_id] #.to(args["device"])
             y = labels[datapoint_id] #.to(args["device"])
             
-            if args["problem"] == "extend":
-                y_out = infer_nopad(model, x, y, params, overlap=True, device=args["device"])
+            if args["problem"] == "extend": ...
+                # y_out = infer_nopad(model, x, y, params, overlap=True, device=args["device"])
             else:
                 y_out = model.infer(x.unsqueeze(0), args["device"])
 
