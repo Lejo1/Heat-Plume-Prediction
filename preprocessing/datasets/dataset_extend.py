@@ -18,11 +18,18 @@ class DatasetExtend(DatasetBasis):
         
         print(self.spatial_size, "check x, y when new generated dataset!")
         self.out_size, self.gap = self.calc_gap_out_size(kernel_size, n_blocks, n_convs_per_block)
+        self.skip_per_dir:int = self.gap
+        assert self.skip_per_dir <= self.gap, "skip_per_dir must be smaller or equal to gap!"
         self.dp_per_run:int = self.calc_dp_per_run() # CHECK! for training more dps are possible - this is more for inference
-        print(f"dp_per_run: {self.dp_per_run}, spatial_size: {self.spatial_size}, box_size: {self.box_size}, skip_per_dir: {self.gap}")
+        print(f"dp_per_run: {self.dp_per_run}, spatial_size: {self.spatial_size}, box_size: {self.box_size}, skip_per_dir: {self.skip_per_dir}, gap: {self.gap}, out_size: {self.out_size}")
+        # assert self.dp_per_run > 1, "dp_per_run is not larger than 1! Adjust box_size or skip_per_dir." # TODO only for hsearch!!
+
 
     def __len__(self):
         return len(self.input_names) * self.dp_per_run
+
+    def n_runs(self):
+        return len(self.input_names)
     
     @property
     def input_channels(self):
@@ -54,7 +61,7 @@ class DatasetExtend(DatasetBasis):
         return data_tensor
 
     def calc_dp_per_run(self):
-        return (self.spatial_size[0] - self.front_exclude - self.box_size - self.out_size) // self.gap
+        return (self.spatial_size[0] - self.front_exclude - self.box_size - self.out_size) // self.skip_per_dir
 
     def calc_gap_out_size(self, kernel_size:int, n_blocks:int, n_convs_per_block:int):
         # gap-formula: offset = gap = zero-adding width
@@ -80,14 +87,27 @@ class DatasetExtend(DatasetBasis):
         return out_size, gap  # total loss divided by 2 (both sides)
     
     def insert_in_domain(self, i, domain, new_data, case:str):
-            start = self.get_start_loc(i)
-            if case=="Inputs":
-                domain[start : start+self.box_size] = new_data # input temperature
-            elif case=="Labels":
-                domain[start+self.box_size-self.gap : start+2*self.box_size-self.gap] = new_data # label temperature
-            elif case=="Outputs":
-                domain[start+self.box_size : start+self.box_size+self.out_size] = new_data # output temperature
-       
+        start = self.get_start_loc(i)
+        if case=="Inputs":
+            if domain.shape[0] < start + self.box_size:
+                # extend domain if necessary
+                domain_extension = torch.zeros((start + self.box_size - domain.shape[0], domain.shape[1]))
+                domain = torch.cat((domain, domain_extension), dim=0)
+            domain[start : start+self.box_size] = new_data # input temperature
+        elif case=="Labels":
+            if domain.shape[0] < start + 2*self.box_size - self.gap:
+                # extend domain if necessary
+                domain_extension = torch.zeros((start + 2*self.box_size - self.gap - domain.shape[0], domain.shape[1]))
+                domain = torch.cat((domain, domain_extension), dim=0)
+            assert domain.shape[0] <= self.spatial_size[0], "Domain size exceeded!"
+            domain[start+self.box_size-self.gap : start+2*self.box_size-self.gap] = new_data # label temperature
+        elif case=="Outputs":
+            if domain.shape[0] < start + self.box_size + self.out_size:
+                # extend domain if necessary
+                domain_extension = torch.zeros((start + self.box_size + self.out_size - domain.shape[0], domain.shape[1]))
+                domain = torch.cat((domain, domain_extension), dim=0)
+            domain[start+self.box_size : start+self.box_size+self.out_size] = new_data # output temperature
+        return domain
     
     def plot_full_run(self, box_i, model, break_after:int=-1):
         # plot all extend-boxes of one run
