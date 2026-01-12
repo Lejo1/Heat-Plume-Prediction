@@ -34,7 +34,7 @@ def extend_plumes_inference_pipeline(run_id, path_data, path_sparnn, path_1hpnn=
         plt.show()
 
     # load SpaR-NN
-    model = UNetHalfPad2(in_channels=3, out_channels=1, init_features=hparams["init_features"]["values"][0], depth=hparams["depth"]["values"][0], kernel_size=hparams["kernel_size"]["values"][0], activation=hparams["activation_fct"]["values"][0], norm=hparams["norm"]["values"][0])
+    model = UNetHalfPad2(in_channels=dataset.input_channels, out_channels=1, init_features=hparams["init_features"]["values"][0], depth=hparams["depth"]["values"][0], kernel_size=hparams["kernel_size"]["values"][0], activation=hparams["activation_fct"]["values"][0], norm=hparams["norm"]["values"][0])
     model.load(path_sparnn)
     model.eval()
 
