@@ -1,0 +1,7 @@
+*.ipynb
+*.pt
+__pycache__/
+datasets/dataset_giant_100hp_varyK/
+datasets_prep/
+runs/bm/
+runs/others/
