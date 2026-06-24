@@ -26,21 +26,21 @@ class NormalizeTransform:
     def reverse(self,data,data_type = "Labels"):
         for prop, stats in self.info[data_type].items():
             index = stats["index"]
-            self.__reverse_norm(data,index,stats)
+            data[index] = self.__reverse_norm(data,index,stats)
         return data
     
     def __apply_norm(self,data,index,stats):
-        norm = stats["norm"]
-        
-        def rescale():
-            delta = stats["max"] - stats["min"]
-            data[index] = (data[index] - stats["min"]) / delta * (self.out_max - self.out_min) + self.out_min
-        
+        try:
+            norm = stats["norm"]
+        except KeyError:
+            logging.info(f"Normalization type not found for index {index}. Defaulting to 'Rescale'.")
+            norm = "Rescale"
+                
         if norm == "LogRescale":
             data[index] = torch.log(data[index] - stats["min"] + 1)
-            rescale()
+            data[index] = self.rescale(data, index, ins=(self.out_min, self.out_max), out=(stats["min"], stats["max"]))
         elif norm == "Rescale":
-            rescale()
+            data[index] = self.rescale(data, index, out=(stats["min"], stats["max"]), ins=(self.out_min, self.out_max))
         elif norm == "Standardize":
             data[index] = (data[index] - stats["mean"]) / stats["std"]
         elif norm is None:
@@ -48,24 +48,30 @@ class NormalizeTransform:
         else:
             raise ValueError(f"Normalization type '{stats['norm']}' not recognized")
         
+    def rescale(self, data, index, out, ins):
+        delta = ins[1] - ins[0]
+        data[index] = (data[index] - out[0]) / (out[1] - out[0]) * delta + ins[0]
+        return data[index]
+        
     def __reverse_norm(self,data,index,stats):
-        norm = stats["norm"]
-
-        def rescale():
-            delta = stats["max"] - stats["min"]
-            data[index] = (data[index] - self.out_min) / (self.out_max - self.out_min) * delta + stats["min"]
+        try:
+            norm = stats["norm"]
+        except KeyError:
+            logging.info(f"Normalization type not found for index {index}. Defaulting to 'Rescale'.")
+            norm = "Rescale"
 
         if norm == "LogRescale":
-            rescale()
+            data[index] = self.rescale(data, index, ins=(stats["min"], stats["max"]), out=(self.out_min, self.out_max))
             data[index] = torch.exp(data[index]) + stats["min"] - 1
         elif norm == "Rescale":
-            rescale()
+            data[index] = self.rescale(data, index, out=(self.out_min, self.out_max), ins=(stats["min"], stats["max"]))
         elif norm == "Standardize":
             data[index] = data[index] * stats["std"] + stats["mean"]
         elif norm is None:
             pass
         else:
             raise ValueError(f"Normalization type '{stats['Norm']}' not recognized")
+        return data[index]
 
 class ReduceTo2DTransform:
     """

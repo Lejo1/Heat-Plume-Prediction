@@ -19,7 +19,6 @@ class DataToVisualize:
     data: np.ndarray
     category: str
     physical_property: str
-    extent_highs :tuple = (1280,100) # x,y in meters
     imshowargs: Dict = field(default_factory=dict)
     contourfargs: Dict = field(default_factory=dict)
     contourargs: Dict = field(default_factory=dict)
@@ -27,8 +26,6 @@ class DataToVisualize:
     vmin: float = None
 
     def __post_init__(self):
-        extent = (0,int(self.extent_highs[0]),int(self.extent_highs[1]),0)
-
         if "temperature" in self.physical_property.lower():
             cmap = "jp_temperature"
         elif "material" in self.physical_property.lower():
@@ -37,8 +34,8 @@ class DataToVisualize:
             cmap = "jp_linear"
             
         self.imshowargs = {"cmap": cmap, 
-                           "extent": extent,
-                           "interpolation": "nearest",}
+                           "interpolation": "nearest",
+                           "origin": "lower",}
         if self.vmax is not None:
             self.imshowargs["vmax"] = self.vmax
         if self.vmin is not None:
@@ -46,27 +43,12 @@ class DataToVisualize:
 
         self.contourfargs = {"levels": np.arange(10.4, 16, 0.25), 
                              "cmap": cmap, 
-                             "extent": extent}
+                             }
         
         T_gwf = 10.6
         self.contourargs = {"levels" : [np.round(T_gwf + 1, 1)],
                             "cmap" : "Pastel1", 
-                            "extent": extent}
-
-        if self.physical_property == "Liquid Pressure [Pa]":
-            self.physical_property = "Pressure [Pa]"
-        elif self.physical_property == "Material ID":
-            self.physical_property = "Positions of Heat Pumps [-]"
-        elif self.physical_property == "Permeability X [m^2]":
-            self.physical_property = "Permeability [m$^2$]"
-        elif self.physical_property == "SDF":
-            self.physical_property = "SDF-Transformed Positions of Heat Pumps [-]"
-        elif self.physical_property == "MDF":
-            self.physical_property = "MDF-Transformed Positions of Heat Pumps [-]"
-        elif self.physical_property == "Streamlines Fade":
-            self.physical_property = "Streamlines Fade [-]"
-        elif self.physical_property == "Streamlines":
-            self.physical_property = "Streamlines [-]"
+                            }
 
 def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datapoints_to_visu: int = inf, plot_path: str = "default", pic_format: str = "png"):
     print("Visualizing...") #, end="\r")
@@ -98,7 +80,7 @@ def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datap
             x, y, y_out = reverse_norm_one_dp(x, y, y_out, norm)
             dict_to_plot = prepare_data_to_plot(x, y, y_out, info)
 
-            plot_datafields(dict_to_plot, name_pic, settings_pic, only_inner=False, plot_all_in_1_pic=False)
+            plot_datafields(dict_to_plot, name_pic, settings_pic)
 
             if current_id >= amount_datapoints_to_visu-1:
                 return None
@@ -123,65 +105,38 @@ def prepare_data_to_plot(x: torch.Tensor, y: torch.Tensor, y_out:torch.Tensor, i
     start_pos = ((y.shape[1] - required_size[1])//2, (y.shape[2] - required_size[2])//2)
     y_reduced = y[:,start_pos[0]:start_pos[0]+required_size[1], start_pos[1]:start_pos[1]+required_size[2]]
     
-    outs_max = [max(y_reduced[idx].max(), y_out[idx].max()) for idx in range(len(y_reduced))]
-    outs_min = [min(y_reduced[idx].min(), y_out[idx].min()) for idx in range(len(y_reduced))]
-    extent_highs_y = (np.array(info["CellsSize"][:2]) * y_out.shape[-2:])
+    outs_max = [max(y_reduced[i].max(), y_out[i].max()) for i in range(len(y_reduced))]
+    outs_min = [min(y_reduced[i].min(), y_out[i].min()) for i in range(len(y_reduced))]
     
     dict_to_plot = {}
     labels = info["Labels"].keys()
     for label in labels:
         index = info["Labels"][label]["index"]
-        dict_to_plot[f"{label}_true"] = DataToVisualize(y_reduced[index], "Label", label, extent_highs_y, vmax=outs_max[index], vmin=outs_min[index])
-        dict_to_plot[f"{label}_out"] = DataToVisualize(y_out[index], "Prediction", label, extent_highs_y, vmax=outs_max[index], vmin=outs_min[index])
-        dict_to_plot[f"{label}_error"] = DataToVisualize(torch.abs(y_reduced[index]-y_out[index]), "Absolute Error", label, extent_highs_y)
+        dict_to_plot[f"{label}_true"] = DataToVisualize(y_reduced[index], "Label", label, vmax=outs_max[index], vmin=outs_min[index])
+        dict_to_plot[f"{label}_out"] = DataToVisualize(y_out[index], "Prediction", label, vmax=outs_max[index], vmin=outs_min[index])
+        dict_to_plot[f"{label}_error"] = DataToVisualize(torch.abs(y_reduced[index]-y_out[index]), "Absolute Error", label)
     inputs = info["Inputs"].keys()
     for input in inputs:
         index = info["Inputs"][input]["index"]
+        if "[" in input: # if input name contains units, remove them for the plot title
+            input = input.split("[")[0]
         dict_to_plot[input] = DataToVisualize(x[index], "Input", input, (np.array(info["CellsSize"][:2]) * x.shape[-2:]))
 
     return dict_to_plot
 
-def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pic: dict, only_inner: bool = False, plot_all_in_1_pic: bool = True):
+def plot_datafields(data: Dict[str, DataToVisualize], name_pic: str, settings_pic: dict):
     # plot datafields (temperature true, temperature out, error, physical variables (inputs))
+    for (name, datapoint) in data.items():
+        fig, _ = plt.subplots(1, 1, sharex=True)
+        fig.set_figheight(5)
+        plt.title(datapoint.category)
+        plt.imshow(datapoint.data, **datapoint.imshowargs)
 
-    if plot_all_in_1_pic:
-        num_subplots = len(data)
-        fig, axes = plt.subplots(num_subplots, 1, sharex=True)
-        fig.set_figheight(num_subplots*3)
-        
-        for index, (name, datapoint) in enumerate(data.items()):
-            plt.sca(axes[index])
-            plt.title(datapoint.category)
-            if only_inner:
-                plt.imshow(datapoint.data[100:400,100:400], **datapoint.imshowargs)
-            else:  
-                plt.imshow(datapoint.data, **datapoint.imshowargs)
-            plt.gca().invert_yaxis()
-
-            plt.ylabel("x [m]")
-            aligned_colorbar(label=datapoint.physical_property)
-
-        plt.xlabel("y [m]")
+        plt.ylabel("y [cells]")
+        plt.xlabel("x [cells]")
+        aligned_colorbar(label=datapoint.physical_property)
         plt.tight_layout()
-        ext_inner = "_inner" if only_inner else ""
-        plt.savefig(f"{name_pic}{ext_inner}.{settings_pic['format']}", **settings_pic)
-    else:
-        for (name, datapoint) in data.items():
-            fig, _ = plt.subplots(1, 1, sharex=True)
-            fig.set_figheight(5)
-            plt.title(datapoint.category)
-            if only_inner:
-                plt.imshow(datapoint.data[100:400,100:400], **datapoint.imshowargs)
-            else:  
-                plt.imshow(datapoint.data, **datapoint.imshowargs)
-
-            plt.ylabel("x [m]")
-            plt.xlabel("y [m]")
-            aligned_colorbar(label=datapoint.physical_property)
-            plt.tight_layout()
-            ext_inner = "_inner" if only_inner else ""
-            plt.savefig(f"{name_pic}{ext_inner}_{name}.{settings_pic['format']}", **settings_pic)
-
+        plt.savefig(f"{name_pic}_{name}.{settings_pic['format']}", **settings_pic)
 
 def aligned_colorbar(*args, **kwargs):
     cax = make_axes_locatable(plt.gca()).append_axes(

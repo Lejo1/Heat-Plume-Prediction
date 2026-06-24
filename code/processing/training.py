@@ -26,7 +26,7 @@ def training(args: Dict, PATH_DATA_PREP: Path):
     
     input_channels, output_channels, dataloaders = init_data(args, batchsize=args["batchsize"], tmp_bool_cutouts=args["bool_cutouts"], ORDER_DATA=args["order_data"])
     
-    if input_channels == 3 and output_channels == 1:
+    if (input_channels == 3 and output_channels == 1) or output_channels > 1:
         model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
     else:
         model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
@@ -57,9 +57,19 @@ def training(args: Dict, PATH_DATA_PREP: Path):
         model.save(args["destination"])
         solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time.total_seconds(), args["device"])
 
+    for case, dataloader in dataloaders.items():
+        for inputs, labels in dataloader:
+            print(inputs.shape, labels.shape, "shape of inputs and labels")
+            len_batch = inputs.shape[0]
+            for datapoint_id in range(len_batch):
+                x = inputs[datapoint_id]
+                y = labels[datapoint_id]
+                y_out = model.infer(x.unsqueeze(0), args["device"])
+                torch.save(y_out, f"prediction_{case}.pt")
+
     # postprocessing
-    case = "val"
-    visualizations(model, dataloaders[case], args, plot_path=args["destination"] / case, amount_datapoints_to_visu=1, pic_format="png")
+    for case in ["train", "val", "test"]:
+        visualizations(model, dataloaders[case], args, plot_path=args["destination"] / case, amount_datapoints_to_visu=1, pic_format="png")
 
     return model
 

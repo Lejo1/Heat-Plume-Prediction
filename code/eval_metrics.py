@@ -10,73 +10,102 @@ from preprocessing.data_init import init_data
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.unetVariants import UNetNoPad2, UNet
 from processing.loss_fcts import SSIMLoss, LinfLoss, PATLoss
+from postprocessing.metric_connectivity import connectivityLoss
+
+def load_hyperparams(args):
+    hyperparams = load_yaml(args["destination"] / "HPS_options.yaml")
+    for key in hyperparams.keys():
+        args[key] = hyperparams[key]["values"][0]
+    return args
+
+def init_model(args, input_channels, output_channels):
+    if args["problem"] in ["allin1"]:
+        if input_channels == 3 and output_channels == 1: # end-to-end, want to use same data-split
+            model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
+        else:
+            model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
+    elif args["problem"] in ["1hp"]:
+        model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], dilation=args["dilation"]).float() # older implementation
+    elif args["problem"] in ["test"]:
+        model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], dilation=args["dilation"]).float() # newer implementation
+    model.to(args["device"])
+        
+    if args["case"] in ["test", "finetune"]:
+        model.load(args["model"], args["device"])
+    if args["case"] == "test":
+        model.eval()
+    return model
 
 def preparation(PATH_current_data: Path, PATH_current_model: Path, PATH_destination: Path, scaling:bool=False):
-    # load data for dummyK, step1 (predV)
-
-    args = load_yaml(PATH_current_model / "command_line_arguments.yaml")
+    # load data and model
+    args = load_hyperparams({"destination": PATH_current_model})
     args["data_prep"] = PATH_current_data
     args["model"] = PATH_current_model
     args["case"] = "test"
     args["destination"] = PATH_destination
-    print(args)
 
+    cla = load_yaml(PATH_current_model / "command_line_arguments.yaml")
+    args["order_data"] = cla["order_data"]
+    args["problem"] = cla["problem"]
+    args["device"] = "cpu"
     if scaling:
         args["order_data"] = [0,0]
-    input_channels, output_channels, dataloaders = init_data(args, tmp_bool_cutouts=False, ORDER_DATA=args["order_data"])
-    hparams = load_yaml(PATH_current_model / "HPS_options.yaml")
-    print(hparams)
 
-    settings = {"init_features": hparams["init_features"]["values"][0], 
-                "depth": hparams["depth"]["values"][0],
-                "kernel_size": hparams["kernel_size"]["values"][0],
-                "stride": hparams["stride"]["values"][0],
-                "dilation": hparams["dilation"]["values"][0],
-                "activation": hparams["activation_fct"]["values"][0],
-                "norm": hparams["norm"]["values"][0],
-                "repeat_inner": hparams["repeat_inner"]["values"][0],
-                }
-    if "ddunet" in PATH_current_model.name:
+    # print(args)
+    input_channels, output_channels, dataloaders = init_data(args)
+
+    if "ddunet" in PATH_current_model.name.lower():
         pass
-    elif "unetnopad" in PATH_current_model.name:
-        model = UNetNoPad2(input_channels, output_channels, **settings)
-    elif "unet" in PATH_current_model.name:
-        model = UNet(input_channels, output_channels, **settings)
+    elif any(x in PATH_current_model.name.lower() for x in ["energy", "padding", "dilated"]):
+        args["problem"] = "test"
+        model = init_model(args, input_channels, output_channels)
+    elif any(x in PATH_current_model.name.lower() for x in ["unet",]):
+        args["problem"] = "1hp"
+        # model = UNet(input_channels, output_channels, **args)
+        model = init_model(args, input_channels, output_channels)
     else:
-        model = UNetNoPad2(input_channels, output_channels, **settings)
-    model.load(PATH_current_model)
-    model.eval()
+        model = init_model(args, input_channels, output_channels)
     
     info = load_yaml(PATH_current_model / "info.yaml")
     norm = NormalizeTransform(info)
-    print(info)
+    # print(info)
 
     return dataloaders, model, norm, info, args, output_channels
 
-def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dataloaders, model, norm, info, args, output_channels):
+def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dataloaders, model, norm, info, args, output_channels, filename=None):
     collected_metrics = {"model": PATH_current_model.name, "data": PATH_current_data.name, "order data": args["order_data"]}
     for case, dataloader in dataloaders.items():
         collected_metrics[case] = {}
         metrics:dict = {"MSE [phys. unit^2]": MSELoss(), "MAE [phys. unit]": L1Loss(), "Linf [phys. unit]": LinfLoss(), "Huber [phys. unit]": HuberLoss(), "SSIM": SSIMLoss()}
         if output_channels == 1: # some only make sense for Temperature predictions
-            metrics["PAT0.1 [%]"], metrics["PAT1.0 [%]"] = PATLoss(pat_thresholds=[0.1]), PATLoss(pat_thresholds=[1])
+            metrics["MoC [--]"], metrics["PAT0.1 [%]"], metrics["PAT1.0 [%]"] = None, PATLoss(pat_thresholds=[0.1]), PATLoss(pat_thresholds=[1])
         for metric_name, metric in metrics.items():
-            print(f"Calculating {metric_name} for {case}",end=" ")
+            print(f"{filename}: Calculating {metric_name} for {case}",end=" ")
             metrics_values = []
 
             for batch in dataloader:
                 inputs, targets = batch
+                inputs = inputs.to(args["device"])
+                targets = targets.to(args["device"])
                 outputs = model(inputs).detach()
-
                 inputs, targets = crop_to_output_size(inputs, targets, outputs)
-                
-                if metric_name in ["SSIM", "IoU"]:
+
+                if metric_name in ["SSIM",]:
                     values = torch.Tensor([metric(outputs[:,i], targets[:,i]) for i in range(outputs.shape[1])])
                 else:
                     # unnormalize inputs and targets
                     reverse_normalization(norm, inputs, targets, outputs)
                     # calc metrics per output channel
-                    if "PAT" in metric_name:
+                    if "MoC" in metric_name:
+                        if targets.shape[-3] == 1: # only applicable to Temperature output
+                            values = []
+                            for input, output in zip(inputs, outputs):
+                                dict_connectivity = connectivityLoss(input, output, id_mat_ids=info["Inputs"]["Material ID"]["index"], threshold=10.7)
+                                values.append(dict_connectivity["unconnected_percentage"])
+                            values = torch.mean(torch.Tensor(values))
+                        else: 
+                            values = torch.Tensor([0, 0]) #[torch.inf, torch.inf])
+                    elif "PAT" in metric_name:
                         values = torch.mean(torch.Tensor(metric(outputs, targets).squeeze()))
                     else:
                         values = torch.Tensor([metric(outputs[:,i], targets[:,i]) for i in range(outputs.shape[1])])
@@ -84,11 +113,53 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
                 metrics_values.append(values)
 
             assert len(dataloader) == 1, "I assumed I always have only one batch - otherwise please rethink this code"
-            metrics[metric_name] = torch.mean(torch.stack(metrics_values), dim=0) # average over all batches
+            metrics[metric_name] = torch.mean(torch.stack(metrics_values), dim=0)# average over all batches
             print(f": average = {metrics[metric_name]}")
 
             collected_metrics[case][metric_name] = metrics[metric_name]
-    save_yaml(collected_metrics, PATH_destination / f"metrics_paper25_{PATH_current_model.name} {PATH_current_data.name}.yaml")
+    save_yaml(collected_metrics, PATH_destination / f"{filename}.yaml")
+
+def collect_metrics_101(path_pred, path_label, norm, info, scaling, PATH_destination, filename=None):
+    collected_metrics = {"path_pred": path_pred, "path_label": path_label.name}
+    try:
+        outputs = torch.load(path_pred).cpu()
+    except: #unet++
+        outputs = torch.load(path_pred)[0]["prediction"]
+        outputs = outputs.cpu()
+    run = 0 if scaling else 4
+    targets = torch.load(path_label / "Labels" / f"RUN_{run}.pt").permute(0,2,1).unsqueeze(0)
+    inputs = torch.load(path_label / "Inputs" / f"RUN_{run}.pt").permute(0,2,1).unsqueeze(0)
+    norm(outputs, data_type="Labels") 
+    assert inputs.shape[-2:] == targets.shape[-2:], f"Input shape {inputs.shape} and target shape {targets.shape} do not match!"
+    assert outputs.shape[-2:] == targets.shape[-2:], f"Output shape {outputs.shape} and target shape {targets.shape} do not match!"
+
+    # unnormalize
+    inputs_unnormed, targets_unnormed, outputs_unnormed = inputs.clone(), targets.clone(), outputs.clone()
+    reverse_normalization(norm, inputs_unnormed, targets_unnormed, outputs_unnormed)
+    
+    metrics:dict = {"MSE [phys. unit^2]": MSELoss(), "MAE [phys. unit]": L1Loss(), "Linf [phys. unit]": LinfLoss(), "Huber [phys. unit]": HuberLoss(), "SSIM": SSIMLoss(),
+    "MoC [--]": None, "PAT0.1 [%]": PATLoss(pat_thresholds=[0.1]), "PAT1.0 [%]": PATLoss(pat_thresholds=[1]), # these only if predictT
+    }
+    collected_metrics["test"] = {}
+    for metric_name, metric in metrics.items():
+        metrics_values = []
+        print(f"{filename}: Calculating {metric_name} for test",end=" ")
+        if metric_name in ["SSIM",]:
+            metrics_values = torch.Tensor([metric(outputs[:,i], targets[:,i]) for i in range(outputs.shape[1])])
+        elif "MoC" in metric_name:
+                dict_connectivity = connectivityLoss(inputs_unnormed.squeeze(0), outputs_unnormed.squeeze(0), id_mat_ids=info["Inputs"]["Material ID"]["index"], threshold=10.7)
+                metrics_values.append(dict_connectivity["unconnected_percentage"])
+        elif "PAT" in metric_name:
+            metrics_values = metric(outputs_unnormed.squeeze(0), targets_unnormed.squeeze(0)).squeeze()
+        else:
+            for channel in range(targets.shape[1]):
+                metrics_values.append(metric(outputs_unnormed[:,channel,:,:], targets_unnormed[:,channel,:,:]))
+        metrics[metric_name] = metrics_values
+        print(f": average = {metrics[metric_name]}")
+
+        collected_metrics["test"][metric_name] = metrics[metric_name]
+    save_yaml(collected_metrics, PATH_destination / f"{filename}.yaml")
+
 
 def reverse_normalization(norm, inputs, labels, outputs):
     for tmp_in in inputs:
@@ -100,13 +171,14 @@ def reverse_normalization(norm, inputs, labels, outputs):
 
 def crop_to_output_size(inputs=None, labels=None, outputs=None):
     required_size = outputs.shape[-2:]
-    start_pos = ((labels.shape[-2] - required_size[0])//2, (labels.shape[-1] - required_size[1])//2)
+    start_pos_in = ((inputs.shape[-2] - required_size[0])//2, (inputs.shape[-1] - required_size[1])//2)
+    start_pos_lab = ((labels.shape[-2] - required_size[0])//2, (labels.shape[-1] - required_size[1])//2)
     if len(labels.shape) == 4:
-        inputs = inputs[:,:,start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]] if inputs is not None else None
-        labels = labels[:,:,start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]] if labels is not None else None
+        inputs = inputs[:,:,start_pos_in[0]:start_pos_in[0]+required_size[0], start_pos_in[1]:start_pos_in[1]+required_size[1]] if inputs is not None else None
+        labels = labels[:,:,start_pos_lab[0]:start_pos_lab[0]+required_size[0], start_pos_lab[1]:start_pos_lab[1]+required_size[1]] if labels is not None else None
     elif len(labels.shape) == 3:
-        inputs = inputs[:,start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]] if inputs is not None else None
-        labels = labels[:,start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]] if labels is not None else None
+        inputs = inputs[:,start_pos_in[0]:start_pos_in[0]+required_size[0], start_pos_in[1]:start_pos_in[1]+required_size[1]] if inputs is not None else None
+        labels = labels[:,start_pos_lab[0]:start_pos_lab[0]+required_size[0], start_pos_lab[1]:start_pos_lab[1]+required_size[1]] if labels is not None else None
     return inputs,labels
 
 def metrics_of_one_model(file_name, n_outputs=2, directory=Path("."), run_ids=[1,2,3,4,5]):
