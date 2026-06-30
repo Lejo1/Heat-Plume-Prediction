@@ -16,33 +16,39 @@ class WelfordStatistics:
 
     def add_data(self, x: dict):
         for key, value in x.items():
+            values = value.detach().float().reshape(-1)
+            batch_n = values.numel()
+            batch_mean = values.mean()
+            batch_m2 = ((values - batch_mean) ** 2).sum()
+
             if key not in self.__ns:
                 self.__ns[key] = 0
-                self.__means[key] = torch.zeros_like(value)
-                self.__m2s[key] = 0
+                self.__means[key] = torch.zeros((), dtype=batch_mean.dtype, device=batch_mean.device)
+                self.__m2s[key] = torch.zeros((), dtype=batch_mean.dtype, device=batch_mean.device)
                 self.__mins[key] = value.min()
                 self.__maxs[key] = value.max()
-            # use Welford's online algorithm
-            self.__ns[key] += 1
-            delta = value - self.__means[key]
-            self.__means[key] += delta/self.__ns[key]
-            self.__m2s[key] += delta*(value - self.__means[key].mean())
+
+            total_n = self.__ns[key] + batch_n
+            delta = batch_mean - self.__means[key]
+            self.__means[key] += delta * batch_n / total_n
+            self.__m2s[key] += batch_m2 + delta ** 2 * self.__ns[key] * batch_n / total_n
+            self.__ns[key] = total_n
             self.__mins[key] = torch.min(self.__mins[key], value.min())
             self.__maxs[key] = torch.max(self.__maxs[key], value.max())
 
     def mean(self):
         result = dict()
         for key in self.__ns:
-            result[key] = self.__means[key].mean().item()
+            result[key] = self.__means[key].item()
         return result
 
     def var(self):
         result = dict()
         for key in self.__ns:
             if self.__ns[key] < 2:
-                result[key] = 0
+                result[key] = torch.zeros_like(self.__means[key])
             else:
-                result[key] = (self.__m2s[key]/(self.__ns[key]-1)).mean()
+                result[key] = self.__m2s[key]/(self.__ns[key]-1)
         return result
 
     def std(self):
