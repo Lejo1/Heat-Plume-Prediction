@@ -29,8 +29,8 @@ def make_data_prep_dir(args:dict, prep_dir: Path=None):
 
 def check_model_avail(args:dict):
     # model, destination
-    if not (args["model"] / "model.pt").exists() or not (args["model"] / "info.yaml").exists() or not (args["model"] / "HPS_options.yaml").exists():
-        raise FileNotFoundError(f"model.pt or info.yaml or HPS_options.yaml not found in {args['model']}")
+    if not (args["destination"] / "model.pt").exists() or not (args["destination"] / "info.yaml").exists() or not (args["destination"] / "HPS_options.yaml").exists():
+        raise FileNotFoundError(f"model.pt or info.yaml or HPS_options.yaml not found in {args['destination']}")
 
 def load_yaml(path: Path, **kwargs) -> dict:
     with open(path, "r") as file:
