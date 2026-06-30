@@ -71,6 +71,24 @@ class PATLoss(nn.Module):
             pat[:, idx] = sum(abs(output[:, idx] - label[:, idx]) > self.pat_thresholds[idx], dim=(1, 2)) / (output.shape[2] * output.shape[3])
         return pat * 100
     
+class WeightedMSELoss(nn.Module):
+    # Add a plume-weighted loss:
+    # w(y)=1+λ∣y−0.5∣
+    # L=N1​i∑​w(yi​)(y^​i​−yi​)2.
+    def __init__(self, weight_factor: float = 10.0):
+        super(WeightedMSELoss, self).__init__()
+        self.weight_factor = weight_factor
+        self.mse_loss = nn.MSELoss(reduction='none')
+
+    def forward(self, predictions, labels):
+        # Calculate the weights based on the labels
+        backgroundT = 0.5
+        weights = 1 + self.weight_factor * torch.abs(labels - backgroundT)
+        # Compute the weighted MSE loss
+        loss = self.mse_loss(predictions, labels)
+        weighted_loss = loss * weights
+        return weighted_loss.mean()
+
 class EnergyLoss(nn.Module):
     def __init__(self, data_dir, device:str="cuda:0", data_type=torch.float32, half_precision=False, keep_dim:bool=False):
         super(EnergyLoss, self).__init__()

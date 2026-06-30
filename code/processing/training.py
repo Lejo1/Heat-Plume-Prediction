@@ -11,7 +11,7 @@ from preprocessing.preprocessing import preprocessing
 from preprocessing.data_init import init_data
 from processing.networks.unetVariants import UNetNoPad2, UNet
 from processing.solver import Solver
-from processing.loss_fcts import CombiLoss
+from processing.loss_fcts import CombiLoss, WeightedMSELoss
 from postprocessing.visualization import visualizations
 from utils.utils_args import load_yaml, save_yaml, check_model_avail, make_data_prep_dir
 
@@ -154,6 +154,8 @@ def select_loss_function(args):
         loss = L1Loss()
     elif args["train_loss"].lower() == "mse":
         loss = MSELoss()
+    elif args["train_loss"].lower() == "weightedmse":
+        loss = WeightedMSELoss()
     elif args["train_loss"].lower() == "huber":
         loss = HuberLoss()
     elif args["train_loss"].lower() == "combi":
