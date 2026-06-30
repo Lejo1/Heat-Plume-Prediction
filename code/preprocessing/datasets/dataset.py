@@ -9,7 +9,7 @@ from preprocessing.transforms import NormalizeTransform
 from utils.utils_args import get_run_ids_from_prep
 
 class DatasetBasis(Dataset):
-    def __init__(self, path:str, box_size:int=None):
+    def __init__(self, path:str, box_size:int=None, cache: str = "none", cache_device: str = "cpu"):
         Dataset.__init__(self)
         self.path = pathlib.Path(path)
         self.info = self.__load_info()
@@ -20,6 +20,10 @@ class DatasetBasis(Dataset):
         self.label_names.sort()
         self.__validate_matching_names()
         self.cache = {}
+        self.cache_mode = cache.lower() if cache is not None else "none"
+        self.cache_device = cache_device
+        if self.cache_mode not in ["none", "cpu", "cuda"]:
+            raise ValueError("cache must be one of: none, cpu, cuda")
 
         tmp_dp = torch.load(self.path / "Labels" / self.label_names[0])
         self.n_output_channels = tmp_dp.shape[0]
@@ -60,14 +64,27 @@ class DatasetBasis(Dataset):
     def __len__(self):
         return len(self.input_names)
     
-    def __getitem__(self, idx):
-        input = torch.load(self.path / "Inputs" / self.input_names[idx])[:, :self.box_size, :]
-        label = torch.load(self.path / "Labels" / self.label_names[idx])[:, :self.box_size, :]
+    def __getitem__(self, i:int):
+        if self.cache_mode == "none":
+            input, label = self.__load_datapoint(i)
+        else:
+            if i not in self.cache:
+                input, label = self.__load_datapoint(i)
+                if self.cache_mode == "cuda":
+                    input = input.to(self.cache_device)
+                    label = label.to(self.cache_device)
+                self.cache[i] = input, label
+            input, label = self.cache[i]
+        return input, label
+
+    def __load_datapoint(self, i:int):
+        input = torch.load(self.path / "Inputs" / self.input_names[i])[:, :self.box_size, :]
+        label = torch.load(self.path / "Labels" / self.label_names[i])[:, :self.box_size, :]
         return input, label
 
 class DataPoint(DatasetBasis):
-    def __init__(self, path:str, i:int=0):
-        DatasetBasis.__init__(self, path)
+    def __init__(self, path:str, i:int=0, cache: str = "none", cache_device: str = "cpu"):
+        DatasetBasis.__init__(self, path, cache=cache, cache_device=cache_device)
         if isinstance(i, int):
             run_id = self._run_ids()[i]
             
