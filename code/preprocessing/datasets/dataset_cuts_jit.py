@@ -40,7 +40,7 @@ class SimulationDatasetCuts(DatasetBasis):
         self.case = case
 
     def __len__(self):
-        return self.n_dp * (self.spatial_size[0] - self.box_size[0]) * (self.spatial_size[1] - self.box_size[1]) // self.skip_per_dir**2
+        return self.n_dp * (self.spatial_size[0] - self.box_size[0]) * (self.spatial_size[1] - self.box_size[1]) // self.skip_per_dir**2 + 1
     
     def __getitem__(self, i):
         id, pos = self.idx_to_pos(i)
