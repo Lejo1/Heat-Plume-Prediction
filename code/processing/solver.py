@@ -22,7 +22,6 @@ class Solver(object):
     loss_func: modules.loss._Loss = MSELoss()
     learning_rate: float = 1e-4
     opt: Optimizer = Adam
-    optimizer_switch: bool = False
     finetune: bool = False
     best_model_params: dict = None
     metrics: dict = None
@@ -44,19 +43,9 @@ class Solver(object):
         writer = SummaryWriter(args["destination"])
         device = args["device"]
 
-        # if optimizer_switch is True, switch to LBFGS optimizer after 90% of epochs
-        self.epoch_switch_optimizer = args["epochs"] + 1
-        if self.optimizer_switch:
-            self.epoch_switch_optimizer = int(0.9 * self.epoch_switch_optimizer)
-
         epochs = tqdm(range(args["epochs"]), desc="epochs", disable=False)
         for epoch in epochs:
             try:
-                if epoch == self.epoch_switch_optimizer:
-                    # switch to LBFGS optimizer
-                    self.opt = LBFGS(self.model.parameters(), history_size=20, line_search_fn="strong_wolfe")
-                    logging.info(f"Switched to LBFGS optimizer at epoch {epoch}.")
-
                 # Set lr according to schedule
                 if epoch in self.lr_schedule.keys():
                     self.opt.param_groups[0]["lr"] = self.lr_schedule[epoch]
@@ -130,33 +119,20 @@ class Solver(object):
 
             if self.model.training:
                 self.opt.zero_grad()
-                if self.opt.__class__.__name__ == "LBFGS":
-                    def closure():
-                        """ closure function for optimizer LBFGS """
-                        self.opt.zero_grad()
-                        y_pred = self.model(x)
-                        required_size = y_pred.shape[2:]
-                        start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
-                        y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
-
-                        loss = self.loss_func(y_pred, y_reduced)
-                        loss.backward()
-                        return loss
-                    self.opt.step(closure)
 
             y_pred = self.model(x)
-            required_size = y_pred.shape[2:]
-            start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
-            y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
+            if self.model.__name__() == "UNetNoPad2":
+                required_size = y_pred.shape[2:]
+                start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
+                y = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
+
+            loss = self.loss_func(y_pred, y)
 
             loss = self.loss_func(y_pred, y_reduced)
 
             if self.model.training:
                 loss.backward()
-                if self.opt.__class__.__name__ == "LBFGS":
-                    self.opt.step(closure)
-                else:
-                    self.opt.step()
+                self.opt.step()
 
             epoch_loss += loss.detach().item()
         epoch_loss /= len(dataloader)

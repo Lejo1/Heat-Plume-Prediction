@@ -6,6 +6,9 @@ class Model(nn.Module):
     def __init__(self):
         super().__init__()
 
+    def __name__(self):
+        return self.__class__.__name__
+
     def load(self, model_path:Path, device:str = "cpu", model_name: str = "model.pt", **kwargs):
         location = "cuda:0" if "cuda" in device else "cpu"
         self.load_state_dict(torch.load(model_path/model_name, map_location=location, **kwargs))
