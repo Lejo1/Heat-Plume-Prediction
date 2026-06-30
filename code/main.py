@@ -11,7 +11,7 @@ PATH_MODELS_DIR = Path("../runs/bm") # TODO: change to your path
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--destination", type=str, default=None)
-    parser.add_argument("--hsearch", type=bool, default=False)
+    parser.add_argument("--hsearch", action="store_true", help="perform hyperparameter search", default=False)
     args = parser.parse_args()
     args = vars(args)
     hsearch = args["hsearch"]
