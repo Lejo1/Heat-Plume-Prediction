@@ -24,24 +24,24 @@ def training(args: Dict, PATH_DATA_PREP: Path):
     make_data_prep_dir(args, PATH_DATA_PREP)
     preprocessing(args) # and save info.yaml in model folder
     
-    input_channels, output_channels, dataloaders = init_data(args, batchsize=args["batchsize"], tmp_bool_cutouts=args["bool_cutouts"], ORDER_DATA=args["order_data"])
+    input_channels, output_channels, dataloaders = init_data(args, batchsize=args["batchsize"], tmp_bool_cutouts=args["bool_cutouts"], order_data=args["order_data"])
     
-    if (input_channels == 3 and output_channels == 1) or output_channels > 1:
-        model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"]).float()
-    else:
-        model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
+    # if (input_channels == 3 and output_channels == 1) or output_channels > 1:
+    model = UNet(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
+    # else:
+    #     model = UNetNoPad2(in_channels=input_channels, out_channels=output_channels, depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"], stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"], norm=args["norm"], repeat_inner=args["repeat_inner"]).float()
     model.to(args["device"])
+    print(f"Model has {model.num_of_params()} parameters")
     
     if args["case"] in ["test", "finetune"]:
         check_model_avail(args)
-        model.load(args["model"], args["device"])
+        model.load(args["destination"], args["device"])
     if args["case"] == "test":
         model.eval()
 
     if args["case"] in ["train", "finetune"]:
         loss = select_loss_function(args)
-        # TODO check if correct val-loss in solver (line 73), depends on real or dummy k (permeability)
-        solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), optimizer_switch=args["optimizer_switch"], learning_rate=args["lr"])
+        solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), learning_rate=args["lr"])
         training_time = datetime.now()
         try:
             solver.load_lr_schedule(args["destination"] / "learning_rate_history.csv")
@@ -57,18 +57,17 @@ def training(args: Dict, PATH_DATA_PREP: Path):
         model.save(args["destination"])
         solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time.total_seconds(), args["device"])
 
-    for case, dataloader in dataloaders.items():
-        for inputs, labels in dataloader:
-            print(inputs.shape, labels.shape, "shape of inputs and labels")
-            len_batch = inputs.shape[0]
-            for datapoint_id in range(len_batch):
-                x = inputs[datapoint_id]
-                y = labels[datapoint_id]
-                y_out = model.infer(x.unsqueeze(0), args["device"])
-                torch.save(y_out, f"prediction_{case}.pt")
+    # for case, dataloader in dataloaders.items():
+    #     for inputs, labels in dataloader:
+    #         print(inputs.shape, labels.shape, "shape of inputs and labels")
+    #         len_batch = inputs.shape[0]
+    #         for datapoint_id in range(len_batch):
+    #             x = inputs[datapoint_id]
+    #             y_out = model.infer(x.unsqueeze(0), args["device"])
+    #             torch.save(y_out, f"{args['destination']}/prediction_{case}.pt")
 
     # postprocessing
-    for case in ["train", "val", "test"]:
+    for case in ["train"]: #, "val", "test"]:
         visualizations(model, dataloaders[case], args, plot_path=args["destination"] / case, amount_datapoints_to_visu=1, pic_format="png")
 
     return model
@@ -86,7 +85,6 @@ def run(trial, args: Dict, PATH_DATA_PREP: Path):
     args["activation_fct"] = trial.suggest_categorical("activation_fct", config["activation_fct"]["values"])
     args["norm"] = trial.suggest_categorical("norm", config["norm"]["values"])
     args["repeat_inner"] = trial.suggest_categorical("repeat_inner", config["repeat_inner"]["values"])
-    args["optimizer_switch"] = trial.suggest_categorical("optimizer_switch", config["optimizer_switch"]["values"])
     args["bool_cutouts"] = trial.suggest_categorical("bool_cutouts", config["bool_cutouts"]["values"])
     args["batchsize"] = trial.suggest_categorical("batchsize", config["batchsize"]["values"])
     args["depth"] = trial.suggest_categorical("depth", config["depth"]["values"])
@@ -110,7 +108,7 @@ def run(trial, args: Dict, PATH_DATA_PREP: Path):
 
     # data
     preprocessing(args) # and save info.yaml in model folder
-    input_channels, output_channels, dataloaders = init_data(args, tmp_bool_cutouts=args["bool_cutouts"], batchsize=args["batchsize"], ORDER_DATA=args["order_data"])
+    input_channels, output_channels, dataloaders = init_data(args, tmp_bool_cutouts=args["bool_cutouts"], batchsize=args["batchsize"], order_data=args["order_data"])
 
     try:
         # model
@@ -129,7 +127,7 @@ def run(trial, args: Dict, PATH_DATA_PREP: Path):
                 "mse": MSELoss()
             }
             loss = loss_mapping.get(args["train_loss"].lower(), MSELoss())
-            solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), optimizer_switch=args["optimizer_switch"], learning_rate=float(args["lr"]))
+            solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=loss, finetune=(args["case"] == "finetune"), learning_rate=float(args["lr"]))
             try:
                 solver.load_lr_schedule(args["destination"] / "learning_rate_history.csv")
                 val_loss = solver.train(args, optuna_trial=trial)
@@ -171,7 +169,6 @@ def load_hyperparams(args):
     args["activation_fct"] = hyperparams["activation_fct"]["values"][0]
     args["norm"] = hyperparams["norm"]["values"][0]
     args["repeat_inner"] = hyperparams["repeat_inner"]["values"][0]
-    args["optimizer_switch"] = hyperparams["optimizer_switch"]["values"][0]
     args["bool_cutouts"] = hyperparams["bool_cutouts"]["values"][0]
     args["batchsize"] = hyperparams["batchsize"]["values"][0]
     args["depth"] = hyperparams["depth"]["values"][0]
