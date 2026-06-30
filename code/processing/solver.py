@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 import time
 from dataclasses import dataclass
-from torch import manual_seed
+from torch import manual_seed, no_grad
 from torch.nn import Module, modules, MSELoss, HuberLoss
 from torch.optim import Adam, Optimizer, LBFGS
 from torch.utils.data import DataLoader
@@ -25,6 +25,7 @@ class Solver(object):
     finetune: bool = False
     best_model_params: dict = None
     metrics: dict = None
+    val_interval: int = 50
 
     def __post_init__(self):
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
@@ -52,14 +53,24 @@ class Solver(object):
                     
                 # Training
                 self.model.train()
-                train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device) #, 
+                train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device, eval_bool=False)
                 
                 # Validation
-                self.model.eval()
-                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
-                if False: # realK
-                    val_epoch_loss = other_losses_val["Huber"] # TODO for realK
+                if epoch % self.val_interval == 0 or epoch == args["epochs"] - 1:
+                    with no_grad():
+                        self.model.eval()
+                        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device, eval_bool=True)
 
+                        # Keep best model
+                        if self.best_model_params is None or val_epoch_loss < self.best_model_params["loss"]:
+                            self.best_model_params = {
+                                "epoch": epoch,
+                                "loss": val_epoch_loss,
+                                "train loss": train_epoch_loss,
+                                "state_dict": deepcopy(self.model.state_dict()),
+                                "optimizer": deepcopy(self.opt.state_dict()),
+                                "training time in sec": (time.perf_counter() - start_time),
+                            }
 
                 # # Logging
                 for metric_name, metric_value in other_losses_val.items():
@@ -70,19 +81,7 @@ class Solver(object):
                 writer.add_scalar("train_loss", train_epoch_loss, epoch)
                 writer.add_scalar("val_loss", val_epoch_loss, epoch)
                 writer.add_scalar("learning_rate", self.opt.param_groups[0]["lr"], epoch)
-                epochs.set_postfix_str(f"train loss: {train_epoch_loss:.2e}, val loss: {val_epoch_loss:.2e}, lr: {self.opt.param_groups[0]['lr']:.1e}")
-                                
-                # Keep best model
-                if self.best_model_params is None or val_epoch_loss < self.best_model_params["loss"]:
-                    self.best_model_params = {
-                        "epoch": epoch,
-                        "loss": val_epoch_loss,
-                        "train loss": train_epoch_loss,
-                        "state_dict": self.model.state_dict(),
-                        "optimizer": self.opt.state_dict(),
-                        "parameters": self.model.parameters(),
-                        "training time in sec": (time.perf_counter() - start_time),
-                    }
+                epochs.set_postfix_str(f"train loss: {train_epoch_loss:.2e}, val loss: {val_epoch_loss:.2e}, lr: {self.opt.param_groups[0]['lr']:.1e}")    
 
             except KeyboardInterrupt:
                 # allows to interrupt training with ctrl+c to change the lr manually
@@ -111,8 +110,14 @@ class Solver(object):
 
         return self.best_model_params["loss"]
 
-    def run_epoch(self, dataloader: DataLoader, device: str):
+    def run_epoch(self, dataloader: DataLoader, device: str, eval_bool: bool = False):
         epoch_loss = 0.0
+
+        metric_totals = {metric_name: 0.0 for metric_name in self.metrics}
+        max_abs_error = 0.0
+        peak_abs_error = 0.0
+        metric_values = {}
+
         for x, y in dataloader:
             x = x.to(device)
             y = y.to(device)
@@ -128,7 +133,12 @@ class Solver(object):
 
             loss = self.loss_func(y_pred, y)
 
-            loss = self.loss_func(y_pred, y_reduced)
+            if eval_bool:
+                abs_error = (y_pred.detach() - y.detach()).abs()
+                max_abs_error = max(max_abs_error, abs_error.max().item())
+                peak_abs_error = max(peak_abs_error, self.error_at_label_peak(abs_error, y.detach()))
+                for metric_name, metric in self.metrics.items():
+                    metric_totals[metric_name] += metric(y_pred, y).detach().item()
 
             if self.model.training:
                 loss.backward()
@@ -138,11 +148,22 @@ class Solver(object):
         epoch_loss /= len(dataloader)
 
         # Calculate metrics
-        metric_values = {}
-        for metric_name, metric in self.metrics.items():
-            metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
+        if eval_bool:
+            metric_values = {
+                metric_name: metric_total / len(dataloader)
+                for metric_name, metric_total in metric_totals.items()
+            }
+            metric_values["max abs error"] = max_abs_error
+            metric_values["peak abs error"] = peak_abs_error
 
         return epoch_loss, metric_values
+
+    @staticmethod
+    def error_at_label_peak(abs_error, label):
+        label_flat = label.flatten(start_dim=2)
+        error_flat = abs_error.flatten(start_dim=2)
+        peak_indices = label_flat.argmax(dim=2, keepdim=True)
+        return error_flat.gather(2, peak_indices).max().item()
 
     def save_lr_schedule(self, path: str):
         """ save learning rate history to csv file"""
@@ -167,8 +188,8 @@ class Solver(object):
         # prepare data as dict
 
         self.model.eval()
-        train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device) 
-        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+        train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device, eval_bool=True) 
+        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device, eval_bool=True)
 
         metrics = {}
         metrics["no_params"] = no_params
