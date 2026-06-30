@@ -144,8 +144,9 @@ def interim_visu(model, dataloader, path_desti, device):
             aligned_colorbar()
 
             plt.subplot(len_batch, 3, (i + 1) * 3 - 0)
-            plt.imshow(torch.abs(labels[i,0].cpu().numpy() - y_outs[i,0].cpu().detach().numpy()), origin="lower", cmap="RdBu_r")#,vmin=0,vmax=1)
+            plt.imshow(torch.abs(labels[i,0].cpu() - y_outs[i,0].cpu().detach()), origin="lower", cmap="RdBu_r")#,vmin=0,vmax=1)
             plt.title(f"Error {i}")
             aligned_colorbar()
         plt.tight_layout()
         plt.savefig(path_desti, dpi=300)
+        break
