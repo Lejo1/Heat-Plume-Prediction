@@ -16,16 +16,16 @@ def read_cla(path:str):
 
     return clas
     
-def make_data_prep_dir(args:dict, prep_dir: Path=None):
-    print(f"Dataset_pre path: {args['data_prep']}")
-    if args["data_prep"] is None:
-        args["data_prep"] = args["data_raw"].name + " inputs_" + args["inputs"] + " outputs_" + args["outputs"]
-        args["data_prep"] = prep_dir / args["data_prep"]
-
-    args["data_prep"].mkdir(parents=True, exist_ok=True)
-    (args["data_prep"] / "Inputs").mkdir(parents=True, exist_ok=True)
-    (args["data_prep"] / "Labels").mkdir(parents=True, exist_ok=True)
-    save_yaml(args, args["destination"] / "command_line_arguments.yaml")
+def load_hyperparams(args):
+    hyperparams = load_yaml(args["destination"] / "HPS_options.yaml")
+    for key in hyperparams.keys():
+        if "values" in hyperparams[key]:
+            args[key] = hyperparams[key]["values"][0]
+        else:
+            args[key] = hyperparams[key]
+    if "lr" in args.keys():
+        args["lr"] = float(args["lr"])
+    return args
 
 def check_model_avail(args:dict):
     # model, destination

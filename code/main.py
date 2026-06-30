@@ -5,8 +5,7 @@ from pathlib import Path
 from processing.training import training, run
 from utils.utils_args import read_cla
 
-PATH_DATA_PREP = Path("/scratch/sgs/pelzerja/datasets_prepared/bm") #Path("../datasets_prep") # TODO: change to your path
-PATH_MODELS_DIR = Path("../runs/bm") # TODO: change to your path
+PATH_MODELS_DIR = Path("../runs/bm")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -19,9 +18,10 @@ if __name__ == "__main__":
     args = read_cla(PATH_MODELS_DIR / args["destination"])
     
     if not hsearch:
-        model = training(args, PATH_DATA_PREP)
+        model = training(args)
 
     else:
+        PATH_DATA_PREP = Path("/scratch/sgs/pelzerja/datasets_prepared/bm")
         print("Study name: ", args["destination"])
         study = optuna.create_study(direction="minimize", storage=f"sqlite:///{PATH_MODELS_DIR}/TEST_STUDY.db", study_name="NAME", load_if_exists=True)
         study.optimize(lambda trial: run(trial, args, PATH_DATA_PREP), n_trials=1)

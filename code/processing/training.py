@@ -13,15 +13,15 @@ from processing.networks.unetVariants import UNetNoPad2, UNet
 from processing.solver import Solver
 from processing.loss_fcts import CombiLoss, WeightedMSELoss
 from postprocessing.visualization import visualizations
-from utils.utils_args import load_yaml, save_yaml, check_model_avail, make_data_prep_dir
+from utils.utils_args import load_yaml, save_yaml, check_model_avail, load_hyperparams
 
-def training(args: Dict, PATH_DATA_PREP: Path):
+def training(args: Dict):
     np.random.seed(1)
     torch.manual_seed(1)
     multiprocessing.set_start_method("spawn", force=True)
 
     args = load_hyperparams(args)
-    make_data_prep_dir(args, PATH_DATA_PREP)
+    save_yaml(args, args["destination"] / "command_line_arguments.yaml")
     preprocessing(args) # and save info.yaml in model folder
     
     input_channels, output_channels, dataloaders = init_data(args, batchsize=args["batchsize"], tmp_bool_cutouts=args["bool_cutouts"], order_data=args["order_data"])
@@ -73,6 +73,7 @@ def training(args: Dict, PATH_DATA_PREP: Path):
     return model
 
 def run(trial, args: Dict, PATH_DATA_PREP: Path):
+    # TODO outdated
     config = load_yaml(args["destination"] / "HPS_options.yaml")
     (args["destination"] / "models").mkdir(parents=True, exist_ok=True)
 
@@ -161,22 +162,3 @@ def select_loss_function(args):
     elif args["train_loss"].lower() == "combi":
         loss = CombiLoss(0.75)
     return loss
-
-def load_hyperparams(args):
-    hyperparams = load_yaml(args["destination"] / "HPS_options.yaml")
-    args["len_box"] = hyperparams["len_box"]["values"][0]
-    args["skip_per_dir"] = hyperparams["skip_per_dir"]["values"][0]
-    args["stride"] = hyperparams["stride"]["values"][0]
-    args["dilation"] = hyperparams["dilation"]["values"][0]
-    args["activation_fct"] = hyperparams["activation_fct"]["values"][0]
-    args["norm"] = hyperparams["norm"]["values"][0]
-    args["repeat_inner"] = hyperparams["repeat_inner"]["values"][0]
-    args["bool_cutouts"] = hyperparams["bool_cutouts"]["values"][0]
-    args["batchsize"] = hyperparams["batchsize"]["values"][0]
-    args["depth"] = hyperparams["depth"]["values"][0]
-    args["init_features"] = hyperparams["init_features"]["values"][0]
-    args["kernel_size"] = hyperparams["kernel_size"]["values"][0]
-    args["lr"] = float(hyperparams["lr"]["values"][0])
-    args["inputs"] = hyperparams["inputs"]["values"][0]
-    args["train_loss"] = hyperparams["train_loss"]["values"][0]
-    return args
