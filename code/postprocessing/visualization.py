@@ -20,35 +20,17 @@ class DataToVisualize:
     category: str
     physical_property: str
     imshowargs: Dict = field(default_factory=dict)
-    contourfargs: Dict = field(default_factory=dict)
-    contourargs: Dict = field(default_factory=dict)
     vmax: float = None
     vmin: float = None
 
     def __post_init__(self):
-        if "temperature" in self.physical_property.lower():
-            cmap = "jp_temperature"
-        elif "material" in self.physical_property.lower():
-            cmap = "binary"
-        else:
-            cmap = "jp_linear"
-            
-        self.imshowargs = {"cmap": cmap, 
+        self.imshowargs = {"cmap": "RdBu_r", 
                            "interpolation": "nearest",
                            "origin": "lower",}
         if self.vmax is not None:
             self.imshowargs["vmax"] = self.vmax
         if self.vmin is not None:
             self.imshowargs["vmin"] = self.vmin
-
-        self.contourfargs = {"levels": np.arange(10.4, 16, 0.25), 
-                             "cmap": cmap, 
-                             }
-        
-        T_gwf = 10.6
-        self.contourargs = {"levels" : [np.round(T_gwf + 1, 1)],
-                            "cmap" : "Pastel1", 
-                            }
 
 def visualizations(model: UNet, dataloader: DataLoader, args: dict, amount_datapoints_to_visu: int = inf, plot_path: str = "default", pic_format: str = "png"):
     print("Visualizing...") #, end="\r")
@@ -142,3 +124,28 @@ def aligned_colorbar(*args, **kwargs):
     cax = make_axes_locatable(plt.gca()).append_axes(
         "right", size=0.3, pad=0.05)
     plt.colorbar(*args, cax=cax, **kwargs)
+
+def interim_visu(model, dataloader, path_desti, device):
+    for inputs, labels in dataloader:
+        len_batch = inputs.shape[0]
+        # for dp_in, dp_lab in zip(inputs, labels):
+        y_outs = model.infer(inputs.to(device), device)
+
+        plt.figure(figsize=(12,12))
+        for i in range(len_batch):
+            plt.subplot(len_batch, 3, (i + 1) * 3 - 2)
+            plt.imshow(labels[i,0].cpu().numpy(), origin="lower", cmap="RdBu_r")#,vmin=0,vmax=1)
+            plt.title(f"Label {i}")
+            aligned_colorbar()
+
+            plt.subplot(len_batch, 3, (i + 1) * 3 - 1)
+            plt.imshow(y_outs[i,0].cpu().detach().numpy(), origin="lower", cmap="RdBu_r")#,vmin=0,vmax=1)
+            plt.title(f"Prediction {i}")
+            aligned_colorbar()
+
+            plt.subplot(len_batch, 3, (i + 1) * 3 - 0)
+            plt.imshow(torch.abs(labels[i,0].cpu().numpy() - y_outs[i,0].cpu().detach().numpy()), origin="lower", cmap="RdBu_r")#,vmin=0,vmax=1)
+            plt.title(f"Error {i}")
+            aligned_colorbar()
+        plt.tight_layout()
+        plt.savefig(path_desti, dpi=300)

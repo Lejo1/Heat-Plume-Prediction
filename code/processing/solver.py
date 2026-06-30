@@ -10,7 +10,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm.auto import tqdm
 from copy import deepcopy
 
-from postprocessing.visualization import visualizations
+from postprocessing.visualization import visualizations, interim_visu
 from processing.networks.model import weights_init
 from utils.utils_args import save_yaml
 
@@ -102,7 +102,7 @@ class Solver(object):
                     model_tmp.load_state_dict(self.best_model_params["state_dict"])
                     model_tmp.to(args["device"])
                     model_tmp.save(args["destination"], model_name=f"interim_model_e{epoch}.pt")
-                    visualizations(model_tmp, self.val_dataloader, args, plot_path=args["destination"] / f"plot_val_interim_e{epoch}", amount_datapoints_to_visu=2, pic_format="png")
+                    interim_visu(model_tmp, self.val_dataloader, path_desti=args["destination"] / f"interim_visu_e{epoch}.png", device=args["device"])
                 except Exception as e:
                     logging.error(e)
                     
