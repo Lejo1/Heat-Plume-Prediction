@@ -38,7 +38,7 @@ class NormalizeTransform:
                 
         if norm == "LogRescale":
             data[index] = torch.log(data[index] - stats["min"] + 1)
-            data[index] = self.rescale(data, index, ins=(self.out_min, self.out_max), out=(stats["min"], stats["max"]))
+            data[index] = self.rescale(data, index, ins=(self.out_min, self.out_max), out=self.log_range(stats, data[index]))
         elif norm == "Rescale":
             data[index] = self.rescale(data, index, out=(stats["min"], stats["max"]), ins=(self.out_min, self.out_max))
         elif norm == "Standardize":
@@ -61,7 +61,7 @@ class NormalizeTransform:
             norm = "Rescale"
 
         if norm == "LogRescale":
-            data[index] = self.rescale(data, index, ins=(stats["min"], stats["max"]), out=(self.out_min, self.out_max))
+            data[index] = self.rescale(data, index, ins=self.log_range(stats, data[index]), out=(self.out_min, self.out_max))
             data[index] = torch.exp(data[index]) + stats["min"] - 1
         elif norm == "Rescale":
             data[index] = self.rescale(data, index, out=(self.out_min, self.out_max), ins=(stats["min"], stats["max"]))
@@ -72,6 +72,12 @@ class NormalizeTransform:
         else:
             raise ValueError(f"Normalization type '{stats['Norm']}' not recognized")
         return data[index]
+
+    @staticmethod
+    def log_range(stats, data):
+        log_min = torch.zeros((), dtype=data.dtype, device=data.device)
+        log_max = torch.log1p(torch.as_tensor(stats["max"] - stats["min"], dtype=data.dtype, device=data.device))
+        return log_min, log_max
 
 class ReduceTo2DTransform:
     """
