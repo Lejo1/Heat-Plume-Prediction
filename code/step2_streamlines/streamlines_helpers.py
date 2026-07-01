@@ -1,10 +1,8 @@
 import numpy as np
-from tqdm import tqdm
 import torch
-from scipy.interpolate import RegularGridInterpolator
-from scipy.integrate import solve_ivp
 from datetime import datetime
 from pathlib import Path
+import phi.torch.flow as pf
 
 from utils.utils_args import load_yaml, save_yaml
 
@@ -50,39 +48,43 @@ def build_new_info(info:dict, info_vx:dict, info_vy:dict):
     info["Inputs"]["Liquid Y-Velocity [m_per_y]"]["index"] = 2
 
 # data processing + streamline calculation
-def integrate_velocity(x, y, vx, vy, randomK_data:bool=False):
-        if randomK_data:
-            fx = RegularGridInterpolator((x,y), vx, bounds_error=False, fill_value=None, method="linear")
-            fy = RegularGridInterpolator((x,y), vy, bounds_error=False, fill_value=None, method="linear")
-        else:
-            fy = RegularGridInterpolator((x,y), vx, bounds_error=False, fill_value=None, method="linear")
-            fx = RegularGridInterpolator((x,y), vy, bounds_error=False, fill_value=None, method="linear")
+def build_velocity_grid(vx, vy, dims, randomK_data:bool=False):
+    if randomK_data:
+        u_axis0, u_axis1 = vy, vx
+    else:
+        u_axis0, u_axis1 = vx, vy
+    # velocity samples at integer coordinates 0..N-1, same convention as the previous RegularGridInterpolator
+    bounds = pf.Box(x=(-.5, dims[0]-.5), y=(-.5, dims[1]-.5))
+    values = pf.math.wrap(np.stack([u_axis0, u_axis1], axis=-1), pf.spatial('x,y'), pf.channel(vector='x,y'))
+    return pf.CenteredGrid(values, pf.extrapolation.BOUNDARY, bounds=bounds)
 
-        # defines the velocity function to be integrated
-        def f(t, y):
-            return np.squeeze([fy(y), fx(y)])
+@pf.jit_compile(auxiliary_args='step_size')
+def move_along_field(x, velocity, step_size):
+    return pf.advect.points(pf.geom.Point(x), velocity, step_size, integrator=pf.advect.rk4).center
 
-        return f
+def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5):
+    # Solve for all start points at once. The RK4 step count is chosen so that no point moves
+    # more than max_step_cells per step; the coarse solution is then linearly upsampled to
+    # t_steps samples for drawing.
+    starts = pf.math.wrap(np.asarray(start_points, dtype=np.float32), pf.instance('start_point'), pf.channel(vector='x,y'))
+    v_max = float(pf.math.max(pf.math.norm(velocity.values, 'vector')))
+    n_int = max(min(int(np.ceil(t_end * v_max / max_step_cells)), t_steps - 1), 16)
+    step_size = t_end / n_int
 
-def calc_streamline(interpolator, maxs_xy, start=[5,14], t_end=27.5, t_steps=1000, **kwargs):
-    # Solve for start point
-    sol = solve_ivp(interpolator, [0, t_end], start, t_eval=np.linspace(0,t_end,t_steps), **kwargs)
+    trajectory = pf.iterate(lambda x: move_along_field(x, velocity, step_size), pf.spatial(iter=n_int), starts)
+    trajectory = trajectory.numpy('start_point,iter,vector')
+    t_coarse = np.linspace(0, t_end, n_int + 1)
+    t = np.linspace(0, t_end, t_steps)
 
-    sol_x = sol.y[0]
-    sol_y = sol.y[1]
-
-    # cut sol_y, sol_x if extend x.max(),y.max() or x.min(),y.min() (= 0,0)
-    sol_x = sol_x[sol_x <= maxs_xy[0]]
-    sol_y = sol_y[sol_y <= maxs_xy[1]]
-    sol_x = sol_x[sol_x >= 0]
-    sol_y = sol_y[sol_y >= 0]
-
-    length = np.min([sol_x.shape[0], sol_y.shape[0]])
-    sol_x = sol_x[:length]
-    sol_y = sol_y[:length]
-    t = sol.t[:length]
-    
-    return sol_x, sol_y, t
+    streamlines = []
+    for line in trajectory:
+        sol_x = np.interp(t, t_coarse, line[:,0])
+        sol_y = np.interp(t, t_coarse, line[:,1])
+        # cut each line where it first leaves the domain (0..x.max(), 0..y.max())
+        inside = (sol_x >= 0) & (sol_x <= maxs_xy[0]) & (sol_y >= 0) & (sol_y <= maxs_xy[1])
+        length = len(t) if inside.all() else np.argmin(inside)
+        streamlines.append((sol_x[:length], sol_y[:length], t[:length]))
+    return streamlines
 
 def draw_streamlines(image_data:np.array, streamlines:list, faded:bool=False):
     time = datetime.now()
@@ -96,25 +98,22 @@ def draw_streamlines(image_data:np.array, streamlines:list, faded:bool=False):
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
-def make_streamlines(mat_ids, vx, vy, dims, offset:str=None, randomK_data:bool=False, **kwargs):
+def make_streamlines(mat_ids, vx, vy, dims, offset:str=None, randomK_data:bool=False, faded:bool=True, **kwargs):
     pos_hps = np.array(np.where(mat_ids == 2)).T.astype(float)
     print("Number of heat pumps: ", pos_hps.shape[0])
+    if pos_hps.shape[0] == 0:
+        return torch.tensor(np.zeros(dims))
     pos_hps += np.array([0.5,0.5]) # cell-center offset
     resolution = 5
     if offset != None:
         pos_hps += np.array([0,offset])
-    x,y = (np.arange(0,dims[0]),np.arange(0,dims[1]))
 
     time = datetime.now()
-    streamlines = []
-    integrator = integrate_velocity(x, y, vx/resolution, vy/resolution, randomK_data=randomK_data)
-    for hp in tqdm(pos_hps, desc="Calculating streamlines"):
-        sol = calc_streamline(integrator, (x.max(),y.max()), np.array(hp).T, t_end=27.5, t_steps=10_000, **kwargs)
-        streamlines.append(sol)
+    velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
+    streamlines = calc_streamlines(pos_hps, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=10_000)
     print("Time for calculating streamlines: ", datetime.now()-time, " seconds")
 
-    # streamlines_drawn = draw_streamlines(np.zeros(dims), streamlines, faded=False) # TODO for exp_inputs
-    streamlines_drawn = draw_streamlines(np.zeros(dims), streamlines, faded=True)
+    streamlines_drawn = draw_streamlines(np.zeros(dims), streamlines, faded=faded)
 
     return torch.tensor(streamlines_drawn)
 
