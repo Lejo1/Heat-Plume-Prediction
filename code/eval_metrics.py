@@ -173,7 +173,7 @@ def metrics_of_one_model(file_name, n_outputs=2, directory=Path("."), run_ids=[1
             stds[case] = stds_tmp
             mins_maxs[case] = mins_maxs_tmp
         except:
-            print(f"{case} does not exist for {file_name}")
+            printunmatched(f"{case} does not exist for {file_name}")
             continue
     return metrics, {"means": means, "stds": stds, "mins_maxs": mins_maxs}
 
@@ -234,9 +234,9 @@ def plot_metrics(metrics, title):
 if __name__=="__main__":
 
     # calculate metrics for one model
-    PATH_PREP_DATA = None
-    PATH_MODEL = None
-    PATH_DESTINATION = None
+    PATH_PREP_DATA = Path("../datasets_prep")
+    PATH_MODEL = Path("../models")
+    PATH_DESTINATION = Path("../metrics")
     SCALING = False #or True, if it should be evaluated on the scaling test data
     
     dataloaders, model, norm, info, args, output_channels = preparation(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, scaling=SCALING)
