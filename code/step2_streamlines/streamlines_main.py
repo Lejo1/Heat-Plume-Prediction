@@ -73,16 +73,14 @@ def build_streamlines(model_path:str=None, dataset_path:Path=None, based_on_pred
         # overwrite vx, vy with model output
         inputs_reduced[idx["vx"]] = vv[0]
         inputs_reduced[idx["vy"]] = vv[1]
-        inputs_reduced = inputs_reduced.numpy()
 
-        # make streamlines
-        streamlines_faded = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, randomK_data=randomK, **kwargs)
-
-        streamlines_faded_top = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, randomK_data=randomK, offset=10)
-        streamlines_faded_bottom = make_streamlines(mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]], dims=inputs_reduced[0].shape, randomK_data=randomK, offset=-10)
+        # make streamlines (all three offset variants traced in one batch)
+        streamlines_faded, streamlines_faded_top, streamlines_faded_bottom = make_streamlines(
+            mat_ids=inputs_reduced[0], vx=inputs_reduced[idx["vx"]], vy=inputs_reduced[idx["vy"]],
+            dims=inputs_reduced[0].shape, randomK_data=randomK, offsets=[0, 10, -10], **kwargs)
 
         # norm inputs acc. to info
-        inputs_normed = norm_after(torch.tensor(inputs_reduced), "Inputs")
+        inputs_normed = norm_after(inputs_reduced, "Inputs")
         inputs_normed[idx["sf"]] = streamlines_faded.unsqueeze(0)
         inputs_normed[idx["sf_outers"]] = streamlines_faded_top.unsqueeze(0) + streamlines_faded_bottom.unsqueeze(0)
         # inputs_normed[idx["sf_outers"]] = torch.max(streamlines_faded_top.unsqueeze(0), streamlines_faded_bottom.unsqueeze(0)) # TODO for exp_inputs: if max instead of sum
