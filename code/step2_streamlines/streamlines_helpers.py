@@ -70,25 +70,61 @@ def sample_velocity(velocity, pos):
        + velocity[:,i,j+1]   * (1-fx) * fy     + velocity[:,i+1,j+1] * fx * fy)
     return v.T  # (n_points, 2)
 
-def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5):
+def rk4_step(x, velocity, dt):
+    k1 = sample_velocity(velocity, x)
+    k2 = sample_velocity(velocity, x + dt/2*k1)
+    k3 = sample_velocity(velocity, x + dt/2*k2)
+    k4 = sample_velocity(velocity, x + dt*k3)
+    return x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+
+_rk4_step_compiled = None
+_compile_failed = False
+
+def get_rk4_step(use_compile:bool):
+    # torch.compile fuses the ~450 small tensor ops of one RK4 step into a few kernels, removing
+    # the per-step Python dispatch overhead that pins one CPU core and starves the GPU.
+    # Compiled once per process; any failure falls back to the eager step permanently.
+    global _rk4_step_compiled, _compile_failed
+    if not use_compile or _compile_failed:
+        return rk4_step
+    if _rk4_step_compiled is None:
+        try:
+            _rk4_step_compiled = torch.compile(rk4_step, mode="reduce-overhead")
+        except Exception as e:
+            print(f"WARNING: torch.compile failed ({e}), running RK4 without compilation")
+            _compile_failed = True
+            return rk4_step
+    return _rk4_step_compiled
+
+def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5, use_compile:bool=False):
     # Solve for all start points at once with fixed-step RK4. The step count is chosen so that
     # no point moves more than max_step_cells per step; the coarse solution is then linearly
     # upsampled to t_steps samples for drawing.
     # Differentiable: gradients flow through the RK4 steps and the bilinear velocity sampling
     # (wrap calls in torch.no_grad() when gradients are not needed, it is much faster).
+    global _compile_failed
     x = torch.as_tensor(start_points, dtype=torch.float32).clone()
     v_max = float(velocity.detach().norm(dim=0).max())  # only picks the step count, no gradient needed
     n_int = max(min(int(np.ceil(t_end * v_max / max_step_cells)), t_steps - 1), 16)
     dt = t_end / n_int
 
+    step_fn = get_rk4_step(use_compile)
+    # dt as 0-d tensor for the compiled path: a python float would be baked into the compiled
+    # graph as a constant and trigger a recompilation whenever the step size changes
+    dt_arg = torch.tensor(dt, dtype=torch.float32, device=x.device) if step_fn is not rk4_step else dt
+
     trajectory = torch.empty((x.shape[0], n_int+1, 2), device=x.device)
     trajectory[:,0] = x
     for i in range(n_int):
-        k1 = sample_velocity(velocity, x)
-        k2 = sample_velocity(velocity, x + dt/2*k1)
-        k3 = sample_velocity(velocity, x + dt/2*k2)
-        k4 = sample_velocity(velocity, x + dt*k3)
-        x = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+        try:
+            x = step_fn(x, velocity, dt_arg)
+        except Exception as e:
+            if step_fn is rk4_step:
+                raise
+            print(f"WARNING: compiled RK4 step failed ({e}), falling back to eager execution")
+            _compile_failed = True
+            step_fn, dt_arg = rk4_step, dt
+            x = step_fn(x, velocity, dt_arg)
         trajectory[:,i+1] = x
 
     # linear upsampling to t_steps samples, vectorized over all lines
@@ -148,7 +184,7 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     return 1 - torch.exp(-density)
 
 def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
-                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0):
+                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False):
     # Differentiable forward pass of step 2: trace streamlines for all offsets in one batch and
     # rasterize each offset group to a soft-occupancy image (one image per offset).
     # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
@@ -163,7 +199,7 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
     starts = torch.cat([hp_positions + torch.tensor([0., float(o)], device=device) for o in offsets])
 
     velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
-    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps)
+    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps, use_compile=use_compile)
     return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma)
             for i in range(len(offsets))]
 

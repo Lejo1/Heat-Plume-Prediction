@@ -6,7 +6,7 @@ from processing.training import training, run
 from processing.training_e2e import training_e2e
 from utils.utils_args import read_cla
 
-PATH_DATA_PREP = Path("../datasets_prep") # TODO: change to your path
+PATH_DATA_PREP = Path("../../datasets_prep") # TODO: change to your path
 PATH_MODELS_DIR = Path("../runs") # TODO: change to your path
 
 if __name__ == "__main__":

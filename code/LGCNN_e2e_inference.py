@@ -46,7 +46,8 @@ if __name__ == "__main__":
                      stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
                      norm=args["norm"], repeat_inner=args["repeat_inner"])
     model = LGCNNEndToEnd(v_stats=dataset.info_v["Labels"], unet_args=unet_args,
-                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"]).float()
+                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
+                          use_compile=args.get("compile", False)).float()
     model.load(args["destination"], args["device"])
     model.eval()
 

@@ -43,7 +43,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                      stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
                      norm=args["norm"], repeat_inner=args["repeat_inner"])
     model = LGCNNEndToEnd(v_stats=dataset_train.info_v["Labels"], unet_args=unet_args,
-                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"]).float()
+                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
+                          use_compile=args.get("compile", False)).float()
     model.to(args["device"])
 
     if args["case"] in ["test", "finetune"]:
