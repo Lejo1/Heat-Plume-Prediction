@@ -2,8 +2,10 @@ import logging
 from pathlib import Path
 import time
 from dataclasses import dataclass
+import torch
 from torch import manual_seed
 from torch.nn import Module, modules, MSELoss, HuberLoss
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam, Optimizer, LBFGS
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -26,6 +28,7 @@ class Solver(object):
     finetune: bool = False
     best_model_params: dict = None
     metrics: dict = None
+    clip_grad_norm: float = None  # cap on the global gradient L2 norm, e.g. 1.0 for end-to-end training (exploding gradients through the streamlines); None = off
 
     def __post_init__(self):
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
@@ -153,6 +156,13 @@ class Solver(object):
 
             if self.model.training:
                 loss.backward()
+                if self.clip_grad_norm is not None:
+                    # zero out non-finite entries first: clip_grad_norm_ with an inf total norm
+                    # would scale by 0 and turn inf entries into NaN (inf * 0), poisoning the weights
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+                    clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
                 if self.opt.__class__.__name__ == "LBFGS":
                     self.opt.step(closure)
                 else:

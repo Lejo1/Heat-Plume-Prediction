@@ -147,6 +147,26 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
         density.index_put_((cells_i[mask].long(), cells_j[mask].long()), w[mask], accumulate=True)
     return 1 - torch.exp(-density)
 
+def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
+                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0):
+    # Differentiable forward pass of step 2: trace streamlines for all offsets in one batch and
+    # rasterize each offset group to a soft-occupancy image (one image per offset).
+    # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
+    # m/y, sampled on the grid; tensors may live on any device, computation follows them).
+    resolution = 5
+    hp_positions = torch.as_tensor(hp_positions, dtype=torch.float32)
+    n_hps = hp_positions.shape[0]
+    if n_hps == 0:
+        return [torch.zeros(tuple(dims)) for _ in offsets]
+    device = vx.device if torch.is_tensor(vx) else "cpu"
+    hp_positions = hp_positions.to(device)
+    starts = torch.cat([hp_positions + torch.tensor([0., float(o)], device=device) for o in offsets])
+
+    velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
+    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps)
+    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma)
+            for i in range(len(offsets))]
+
 def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK_data:bool=False, faded:bool=True,
                                t_steps:int=2000, sigma:float=0.7, loss_fn=None, device=None, **kwargs):
     # Gradient of the drawn streamlines (occupancy) w.r.t. the velocity fields:
@@ -160,17 +180,12 @@ def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK
     if pos_hps.shape[0] == 0:
         return torch.zeros(tuple(dims)), torch.zeros(tuple(dims)), torch.zeros(tuple(dims))
     pos_hps += torch.tensor([0.5,0.5]) # cell-center offset
-    resolution = 5
-    if offset != None:
-        pos_hps += torch.tensor([0.,float(offset)])
-    pos_hps = pos_hps.to(device)
 
     # requires_grad_ must come after .to(device), so vx/vy stay leaf tensors with a .grad
     vx = torch.as_tensor(vx, dtype=torch.float32).detach().clone().to(device).requires_grad_(True)
     vy = torch.as_tensor(vy, dtype=torch.float32).detach().clone().to(device).requires_grad_(True)
-    velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
-    streamlines = calc_streamlines(pos_hps, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps)
-    occupancy = draw_streamlines_soft(streamlines, dims, faded=faded, sigma=sigma)
+    occupancy = trace_and_draw_soft(pos_hps, vx, vy, dims, offsets=(0 if offset is None else offset,),
+                                    randomK_data=randomK_data, faded=faded, t_steps=t_steps, sigma=sigma)[0]
 
     loss = occupancy.sum() if loss_fn is None else loss_fn(occupancy)
     loss.backward()

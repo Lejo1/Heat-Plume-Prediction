@@ -3,6 +3,7 @@ from optuna.trial import TrialState
 import argparse
 from pathlib import Path
 from processing.training import training, run
+from processing.training_e2e import training_e2e
 from utils.utils_args import read_cla
 
 PATH_DATA_PREP = Path("../datasets_prep") # TODO: change to your path
@@ -19,7 +20,10 @@ if __name__ == "__main__":
     args = read_cla(PATH_MODELS_DIR / args["destination"])
     
     if not hsearch:
-        model = training(args, PATH_DATA_PREP)
+        if args.get("pipeline") == "e2e":
+            model = training_e2e(args, PATH_DATA_PREP)
+        else:
+            model = training(args, PATH_DATA_PREP)
 
     else:
         print("Study name: ", args["destination"])

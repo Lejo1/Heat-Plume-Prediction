@@ -61,9 +61,44 @@ class DataPoint(DatasetBasis):
             self.input_names = [f"RUN_{run_id}.pt"]
             self.label_names = [f"RUN_{run_id}.pt"]
         elif isinstance(i, list):
-            self.input_names = [f"RUN_{get_run_ids_from_prep(self.path / "Inputs")[ii]}.pt" for ii in i]
-            self.label_names = [f"RUN_{get_run_ids_from_prep(self.path / "Labels")[ii]}.pt" for ii in i]
+            self.input_names = [f"RUN_{get_run_ids_from_prep(self.path / 'Inputs')[ii]}.pt" for ii in i]
+            self.label_names = [f"RUN_{get_run_ids_from_prep(self.path / 'Labels')[ii]}.pt" for ii in i]
         else:
             raise ValueError("i must be an int or a list of ints")
         self.input_names.sort()
         self.label_names.sort()
+
+class DataPointE2E(Dataset):
+    """Full-domain datapoint for end-to-end LGCNN training: joins two prepared datasets.
+
+    x: normalized pki inputs from `<dataset> inputs_pki outputs_xy`,
+    y: normalized T label from `<dataset> inputs_ixyk outputs_t for_s`.
+    Both prep dirs are produced by LGCNN_step2.py (STEP 1); their normalization stats for the
+    shared channels (i, k, vx, vy) are identical by construction.
+    """
+    input_channels = 3   # p, k, i
+    output_channels = 1  # T
+
+    def __init__(self, prep_dir:pathlib.Path, dataset_name:str, i:int=0):
+        Dataset.__init__(self)
+        self.path_v = pathlib.Path(prep_dir) / f"{dataset_name} inputs_pki outputs_xy"
+        self.path_T = pathlib.Path(prep_dir) / f"{dataset_name} inputs_ixyk outputs_t for_s"
+        for path in [self.path_v, self.path_T]:
+            assert path.exists(), f"{path} not found - run the data preparation (STEP 1) of LGCNN_step2.py first"
+        with open(self.path_v / "info.yaml", "r") as f:
+            self.info_v = yaml.safe_load(f)
+        with open(self.path_T / "info.yaml", "r") as f:
+            self.info_T = yaml.safe_load(f)
+        self.norm_T = NormalizeTransform(self.info_T)  # for de-normalizing T in plots/inference
+
+        run_id = get_run_ids_from_prep(self.path_v / "Inputs")[i]
+        self.input_names = [f"RUN_{run_id}.pt"]
+        self.label_names = [f"RUN_{run_id}.pt"]
+
+    def __len__(self):
+        return len(self.input_names)
+
+    def __getitem__(self, idx):
+        input = torch.load(self.path_v / "Inputs" / self.input_names[idx])
+        label = torch.load(self.path_T / "Labels" / self.label_names[idx])
+        return input, label

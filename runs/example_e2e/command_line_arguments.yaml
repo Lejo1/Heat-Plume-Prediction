@@ -1,0 +1,20 @@
+pipeline: e2e
+case: train
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+epochs: 100
+inputs: pki
+model: null
+notes: end-to-end LGCNN (CNN1 + differentiable streamlines + CNN2), pure T loss, from scratch
+outputs: t
+visualize: true
+randomK: true    # True for varyK datasets (flow main-direction switched)
+t_steps: 10000   # streamline samples; also caps the RK4 steps
+sigma: 1.0       # soft-drawing splat width in cells
+clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
+order_data:
+- 0
+- 1
+- 2
