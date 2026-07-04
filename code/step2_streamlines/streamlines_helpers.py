@@ -81,7 +81,7 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
     n_int = max(min(int(np.ceil(t_end * v_max / max_step_cells)), t_steps - 1), 16)
     dt = t_end / n_int
 
-    trajectory = torch.empty((x.shape[0], n_int+1, 2))
+    trajectory = torch.empty((x.shape[0], n_int+1, 2), device=x.device)
     trajectory[:,0] = x
     for i in range(n_int):
         k1 = sample_velocity(velocity, x)
@@ -92,7 +92,7 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
         trajectory[:,i+1] = x
 
     # linear upsampling to t_steps samples, vectorized over all lines
-    t = torch.linspace(0, t_end, t_steps)
+    t = torch.linspace(0, t_end, t_steps, device=x.device)
     pos = t / dt
     idx = pos.long().clamp(max=n_int - 1)
     w = (pos - idx).reshape(1, -1, 1)
@@ -123,9 +123,10 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     # saturate where samples are dense. occupancy = 1 - exp(-density) keeps values in [0,1).
     if window is None:
         window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
-    density = torch.zeros(tuple(dims))
+    device = streamlines[0][0].device if streamlines else "cpu"
+    density = torch.zeros(tuple(dims), device=device)
     half = window // 2
-    offs = torch.arange(-half, half+1, dtype=torch.float32)
+    offs = torch.arange(-half, half+1, dtype=torch.float32, device=device)
     off_i, off_j = torch.meshgrid(offs, offs, indexing='ij')
     off_i = off_i.reshape(1,-1)
     off_j = off_j.reshape(1,-1)
@@ -147,11 +148,14 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     return 1 - torch.exp(-density)
 
 def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK_data:bool=False, faded:bool=True,
-                               t_steps:int=2000, sigma:float=0.7, loss_fn=None, **kwargs):
+                               t_steps:int=2000, sigma:float=0.7, loss_fn=None, device=None, **kwargs):
     # Gradient of the drawn streamlines (occupancy) w.r.t. the velocity fields:
     # back-propagates loss_fn(occupancy) (default: total occupancy) through the soft drawing,
     # the RK4 integration and the bilinear velocity interpolation.
+    # Runs on `device` (default: cuda if available); results are returned on the CPU.
     # Returns (occupancy image, dloss/dvx, dloss/dvy), each with shape `dims`.
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     pos_hps = torch.nonzero(torch.as_tensor(mat_ids) == 2).float()
     if pos_hps.shape[0] == 0:
         return torch.zeros(tuple(dims)), torch.zeros(tuple(dims)), torch.zeros(tuple(dims))
@@ -159,16 +163,18 @@ def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK
     resolution = 5
     if offset != None:
         pos_hps += torch.tensor([0.,float(offset)])
+    pos_hps = pos_hps.to(device)
 
-    vx = torch.as_tensor(vx, dtype=torch.float32).detach().clone().requires_grad_(True)
-    vy = torch.as_tensor(vy, dtype=torch.float32).detach().clone().requires_grad_(True)
+    # requires_grad_ must come after .to(device), so vx/vy stay leaf tensors with a .grad
+    vx = torch.as_tensor(vx, dtype=torch.float32).detach().clone().to(device).requires_grad_(True)
+    vy = torch.as_tensor(vy, dtype=torch.float32).detach().clone().to(device).requires_grad_(True)
     velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
     streamlines = calc_streamlines(pos_hps, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps)
     occupancy = draw_streamlines_soft(streamlines, dims, faded=faded, sigma=sigma)
 
     loss = occupancy.sum() if loss_fn is None else loss_fn(occupancy)
     loss.backward()
-    return occupancy.detach(), vx.grad, vy.grad
+    return occupancy.detach().cpu(), vx.grad.cpu(), vy.grad.cpu()
 
 def make_streamlines(mat_ids, vx, vy, dims, offset:float=None, offsets:list=None, randomK_data:bool=False, faded:bool=True, **kwargs):
     # `offsets`: several start-offsets traced together in one batch (much faster than separate

@@ -38,6 +38,7 @@ RANDOM_K = True
 T_STEPS = 1200   # caps the RK4 steps; backward through the loop is the expensive part
 SIGMA = 2.5      # splat width in cells, sized so lines/gradients are visible on the 2560^2 grid
 ZOOM = 340       # zoom window size in cells
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def load_real_data(runid: str):
@@ -65,8 +66,8 @@ def occupancy_loss(mat_ids, vx, vy, dims):
     pos_hps = torch.nonzero(torch.as_tensor(mat_ids) == 2).float() + torch.tensor([0.5, 0.5])
     with torch.no_grad():
         velocity = build_velocity_grid(torch.as_tensor(vx) / 5, torch.as_tensor(vy) / 5, dims,
-                                       randomK_data=RANDOM_K)
-        lines = calc_streamlines(pos_hps, velocity, (dims[0] - 1, dims[1] - 1), t_steps=T_STEPS)
+                                       randomK_data=RANDOM_K).to(DEVICE)
+        lines = calc_streamlines(pos_hps.to(DEVICE), velocity, (dims[0] - 1, dims[1] - 1), t_steps=T_STEPS)
         occ = draw_streamlines_soft(lines, dims, faded=True, sigma=SIGMA)
     return float(occ.double().sum())
 
@@ -161,10 +162,11 @@ if __name__ == "__main__":
     mat_ids, vx, vy, dims = load_real_data(runid)
     starts = np.array(np.where(mat_ids == 2)).T
     print(f"{runid}: dims {dims}, {starts.shape[0]} heat pumps, v in [{float(vx.min()):.0f}, {float(vx.max()):.0f}] m/y")
+    print(f"device: {DEVICE}")
 
     t0 = time.time()
     occ, grad_vx, grad_vy = make_streamlines_gradients(mat_ids, vx, vy, dims, randomK_data=RANDOM_K,
-                                                       t_steps=T_STEPS, sigma=SIGMA, faded=True)
+                                                       t_steps=T_STEPS, sigma=SIGMA, faded=True, device=DEVICE)
     print(f"forward+backward took {time.time()-t0:.1f}s")
     print(f"occupancy: sum {float(occ.sum()):.1f}, max {float(occ.max()):.3f}")
     print(f"|d/dvx| max {float(grad_vx.abs().max()):.5f} | |d/dvy| max {float(grad_vy.abs().max()):.5f}")
