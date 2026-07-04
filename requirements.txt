@@ -7,7 +7,7 @@ scipy
 pyyaml
 h5py
 tensorboard
-pynvml
+nvidia-ml-py
 torchmetrics
 scikit-image
 ## for hyperparameter search:
