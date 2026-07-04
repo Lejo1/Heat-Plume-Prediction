@@ -14,4 +14,3 @@ scikit-image
 optuna
 jupyterlab
 jupyterlab-optuna
-phiflow

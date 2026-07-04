@@ -70,13 +70,14 @@ def sample_velocity(velocity, pos):
        + velocity[:,i,j+1]   * (1-fx) * fy     + velocity[:,i+1,j+1] * fx * fy)
     return v.T  # (n_points, 2)
 
-@torch.no_grad()
 def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5):
     # Solve for all start points at once with fixed-step RK4. The step count is chosen so that
     # no point moves more than max_step_cells per step; the coarse solution is then linearly
     # upsampled to t_steps samples for drawing.
+    # Differentiable: gradients flow through the RK4 steps and the bilinear velocity sampling
+    # (wrap calls in torch.no_grad() when gradients are not needed, it is much faster).
     x = torch.as_tensor(start_points, dtype=torch.float32).clone()
-    v_max = float(velocity.norm(dim=0).max())
+    v_max = float(velocity.detach().norm(dim=0).max())  # only picks the step count, no gradient needed
     n_int = max(min(int(np.ceil(t_end * v_max / max_step_cells)), t_steps - 1), 16)
     dt = t_end / n_int
 
@@ -114,6 +115,61 @@ def draw_streamlines(image_data:torch.Tensor, streamlines:list, faded:bool=False
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
+def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None):
+    # Differentiable version of draw_streamlines: instead of setting single cells (gradient zero
+    # almost everywhere), every sample spreads a normalized Gaussian over its window x window
+    # neighborhood. Samples are weighted by their arc length ds, so a cell's density is the
+    # faded line length crossing it (independent of the time-sampling density) and does not
+    # saturate where samples are dense. occupancy = 1 - exp(-density) keeps values in [0,1).
+    if window is None:
+        window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
+    density = torch.zeros(tuple(dims))
+    half = window // 2
+    offs = torch.arange(-half, half+1, dtype=torch.float32)
+    off_i, off_j = torch.meshgrid(offs, offs, indexing='ij')
+    off_i = off_i.reshape(1,-1)
+    off_j = off_j.reshape(1,-1)
+    for sol_x, sol_y, t in streamlines:
+        if len(t) < 2:
+            continue
+        seg = ((sol_x[1:]-sol_x[:-1])**2 + (sol_y[1:]-sol_y[:-1])**2 + 1e-12).sqrt()
+        zero = seg.new_zeros(1)
+        ds = (torch.cat([seg, zero]) + torch.cat([zero, seg])) / 2  # arc length per sample
+        fade = 1 - t/t[-1] if faded else torch.ones_like(t)
+        # cells around each sample; which cell a blob lands in is discrete -> detached,
+        # the smooth kernel below carries the gradient
+        cells_i = (sol_x + 0.5).floor().detach().unsqueeze(1) + off_i
+        cells_j = (sol_y + 0.5).floor().detach().unsqueeze(1) + off_j
+        d2 = (sol_x.unsqueeze(1) - cells_i)**2 + (sol_y.unsqueeze(1) - cells_j)**2
+        w = torch.exp(-d2/(2*sigma**2)) / (2*np.pi*sigma**2) * (fade*ds).unsqueeze(1)
+        mask = (cells_i >= 0) & (cells_i < dims[0]) & (cells_j >= 0) & (cells_j < dims[1])
+        density.index_put_((cells_i[mask].long(), cells_j[mask].long()), w[mask], accumulate=True)
+    return 1 - torch.exp(-density)
+
+def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK_data:bool=False, faded:bool=True,
+                               t_steps:int=2000, sigma:float=0.7, loss_fn=None, **kwargs):
+    # Gradient of the drawn streamlines (occupancy) w.r.t. the velocity fields:
+    # back-propagates loss_fn(occupancy) (default: total occupancy) through the soft drawing,
+    # the RK4 integration and the bilinear velocity interpolation.
+    # Returns (occupancy image, dloss/dvx, dloss/dvy), each with shape `dims`.
+    pos_hps = torch.nonzero(torch.as_tensor(mat_ids) == 2).float()
+    if pos_hps.shape[0] == 0:
+        return torch.zeros(tuple(dims)), torch.zeros(tuple(dims)), torch.zeros(tuple(dims))
+    pos_hps += torch.tensor([0.5,0.5]) # cell-center offset
+    resolution = 5
+    if offset != None:
+        pos_hps += torch.tensor([0.,float(offset)])
+
+    vx = torch.as_tensor(vx, dtype=torch.float32).detach().clone().requires_grad_(True)
+    vy = torch.as_tensor(vy, dtype=torch.float32).detach().clone().requires_grad_(True)
+    velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
+    streamlines = calc_streamlines(pos_hps, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps)
+    occupancy = draw_streamlines_soft(streamlines, dims, faded=faded, sigma=sigma)
+
+    loss = occupancy.sum() if loss_fn is None else loss_fn(occupancy)
+    loss.backward()
+    return occupancy.detach(), vx.grad, vy.grad
+
 def make_streamlines(mat_ids, vx, vy, dims, offset:float=None, offsets:list=None, randomK_data:bool=False, faded:bool=True, **kwargs):
     # `offsets`: several start-offsets traced together in one batch (much faster than separate
     # calls), returns one drawn image per offset. `offset`: single offset, returns one image.
@@ -130,8 +186,9 @@ def make_streamlines(mat_ids, vx, vy, dims, offset:float=None, offsets:list=None
     starts = torch.cat([pos_hps + torch.tensor([0.,float(o)]) for o in offsets])
 
     time = datetime.now()
-    velocity = build_velocity_grid(torch.as_tensor(vx)/resolution, torch.as_tensor(vy)/resolution, dims, randomK_data=randomK_data)
-    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=10_000)
+    with torch.no_grad():
+        velocity = build_velocity_grid(torch.as_tensor(vx)/resolution, torch.as_tensor(vy)/resolution, dims, randomK_data=randomK_data)
+        streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=10_000)
     print("Time for calculating streamlines: ", datetime.now()-time, " seconds")
 
     n_hps = pos_hps.shape[0]
