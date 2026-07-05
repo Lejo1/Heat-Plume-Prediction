@@ -13,7 +13,7 @@ from torch.nn import MSELoss, L1Loss, HuberLoss
 from torch.utils.data import DataLoader
 
 from preprocessing.datasets.dataset import DataPointE2E
-from processing.loss_fcts import SSIMLoss, PATLoss
+from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.solver import Solver
 from processing.training import load_hyperparams
@@ -55,8 +55,10 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         model.eval()
 
     if args["case"] in ["train", "finetune"]:
-        # clip_grad_norm caps exploding gradients from backprop through the chaotic advection
-        solver = Solver(model, dataloaders["train"], dataloaders["val"], loss_func=MSELoss(),
+        # loss = MSE(T) + lambda_v * MSE(v); lambda_v=0 (or missing key) = pure temperature loss.
+        # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
+        solver = Solver(model, dataloaders["train"], dataloaders["val"],
+                        loss_func=E2ELoss(lambda_v=args.get("lambda_v", 0.0)),
                         finetune=(args["case"] == "finetune"), learning_rate=args["lr"],
                         clip_grad_norm=args.get("clip_grad", 1.0))
         training_time = datetime.now()
@@ -76,16 +78,18 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     visualize_e2e(model, dataloaders["val"], args, plot_path=args["destination"] / "val_e2e.png")
 
     if "test" in dataloaders:
-        metrics_test = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"])
+        metrics_test = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"],
+                                    info_v=dataset_train.info_v)
         save_yaml(metrics_test, args["destination"] / "measurements_test.yaml")
         print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
         visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
     return model
 
 
-def evaluate_e2e(model, dataloader, info_T, device):
+def evaluate_e2e(model, dataloader, info_T, device, info_v=None):
     """Paper-style metrics of the full e2e pipeline. Temperature metrics are computed in [degC]
-    (de-normalized), SSIM on the normalized fields (same convention as eval_metrics.py)."""
+    (de-normalized), SSIM on the normalized fields (same convention as eval_metrics.py).
+    With info_v given, also reports the velocity MAE in [m/y] (paper Step-1 ref: 22.3 / 32.7)."""
     stats = info_T["Labels"]["Temperature [C]"]
     delta = stats["max"] - stats["min"]
     mse, mae, huber = MSELoss(), L1Loss(), HuberLoss()
@@ -93,49 +97,62 @@ def evaluate_e2e(model, dataloader, info_T, device):
     collected = []
     with torch.no_grad():
         for x, y in dataloader:
-            y_pred = model(x.to(device)).cpu()
-            h, w = y_pred.shape[2:]
+            pred = model(x.to(device)).cpu()
+            h, w = pred.shape[2:]
             i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
             y_crop = y[:, :, i0:i0+h, j0:j0+w]
-            pred_C, label_C = y_pred * delta + stats["min"], y_crop * delta + stats["min"]
-            collected.append({
+            T_pred, T_label = pred[:, 0:1], y_crop[:, 0:1]
+            pred_C, label_C = T_pred * delta + stats["min"], T_label * delta + stats["min"]
+            metrics = {
                 "MAE [degC]": float(mae(pred_C, label_C)),
                 "RMSE [degC]": float(mse(pred_C, label_C)) ** 0.5,
                 "Huber [degC]": float(huber(pred_C, label_C)),
                 "Linf [degC]": float((pred_C - label_C).abs().max()),
-                "SSIM": float(SSIMLoss()(y_pred, y_crop)),
+                "SSIM": float(SSIMLoss()(T_pred, T_label)),
                 "PAT0.1 [%]": float(PATLoss([0.1])(pred_C, label_C).mean()),
                 "PAT1.0 [%]": float(PATLoss([1.0])(pred_C, label_C).mean()),
-            })
+            }
+            if info_v is not None:
+                for ch, name in [(1, "Liquid X-Velocity [m_per_y]"), (2, "Liquid Y-Velocity [m_per_y]")]:
+                    v_stats = info_v["Labels"][name]
+                    v_delta = v_stats["max"] - v_stats["min"]
+                    metrics[f"MAE v{'x' if ch == 1 else 'y'} [m/y]"] = float(
+                        mae(pred[:, ch:ch+1] * v_delta, y_crop[:, ch:ch+1] * v_delta))
+            collected.append(metrics)
     return {name: sum(m[name] for m in collected) / len(collected) for name in collected[0]}
 
 
 def visualize_e2e(model, dataloader, args, plot_path: Path):
-    """Panels: prediction T / label T / error, plus the intermediates v and streamlines."""
+    """3x3 panels: T (prediction/label/error), vx and vy (prediction/simulated label), the
+    velocity error magnitude and the traced streamlines. Prediction/label share one color
+    scale for T; all four velocity panels share one scale."""
     model.eval()
     x, y = next(iter(dataloader))
     with torch.no_grad():
-        y_pred = model(x.to(args["device"])).cpu()
-    v_norm = model.last_intermediates["v_norm"].cpu()[0]
+        pred = model(x.to(args["device"])).cpu()
     sf = model.last_intermediates["sf"].cpu()[0, 0]
     sf_outer = model.last_intermediates["sf_outer"].cpu()[0, 0]
 
-    # center-crop the label to the prediction and de-normalize both to [degC]
-    h, w = y_pred.shape[2:]
+    # center-crop the label to the prediction; de-normalize T to [degC]
+    h, w = pred.shape[2:]
     i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
     y_crop = y[:, :, i0:i0+h, j0:j0+w].clone()
     stats = dataloader.dataset.info_T["Labels"]["Temperature [C]"]
     to_degC = lambda t: t * (stats["max"] - stats["min"]) + stats["min"]
-    T_pred, T_label = to_degC(y_pred[0, 0]), to_degC(y_crop[0, 0])
+    T_pred, T_label = to_degC(pred[0, 0]), to_degC(y_crop[0, 0])
+    v_pred, v_label = pred[0, 1:3], y_crop[0, 1:3]
 
-    # shared color scales: prediction/label T on one, vx/vy on one - so panels are comparable
+    # shared color scales, so prediction and label panels are directly comparable
     T_lim = (min(float(T_pred.min()), float(T_label.min())), max(float(T_pred.max()), float(T_label.max())))
-    v_lim = (float(v_norm.min()), float(v_norm.max()))
+    v_lim = (min(float(v_pred.min()), float(v_label.min())), max(float(v_pred.max()), float(v_label.max())))
+    v_err = (v_pred - v_label).norm(dim=0)
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+    fig, axes = plt.subplots(3, 3, figsize=(18, 16))
     panels = [(T_pred, "prediction T [degC]", "RdBu_r", T_lim), (T_label, "label T [degC]", "RdBu_r", T_lim),
-              ((T_pred - T_label).abs(), "abs error [degC]", "magma", None),
-              (v_norm[0], "predicted vx (normed)", "viridis", v_lim), (v_norm[1], "predicted vy (normed)", "viridis", v_lim),
+              ((T_pred - T_label).abs(), "abs error T [degC]", "magma", None),
+              (v_pred[0], "predicted vx (normed)", "viridis", v_lim), (v_label[0], "simulated vx (normed)", "viridis", v_lim),
+              (v_err, "velocity error |v_pred - v_sim| (normed)", "magma", None),
+              (v_pred[1], "predicted vy (normed)", "viridis", v_lim), (v_label[1], "simulated vy (normed)", "viridis", v_lim),
               (sf + sf_outer, "streamlines (soft, sf + sf_outer)", "magma", None)]
     for ax, (data, title, cmap, lim) in zip(axes.flat, panels):
         vmin, vmax = lim if lim is not None else (None, None)

@@ -53,7 +53,7 @@ if __name__ == "__main__":
 
     x, _ = dataset[0]
     with torch.no_grad():
-        T_pred = model(x.unsqueeze(0).to(args["device"])).cpu()[0]
+        T_pred = model(x.unsqueeze(0).to(args["device"])).cpu()[0, 0:1]  # channel 0 = T, 1:3 = v
 
     # de-normalize to degC and save
     stats = dataset.info_T["Labels"]["Temperature [C]"]
@@ -64,7 +64,7 @@ if __name__ == "__main__":
 
     from torch.utils.data import DataLoader
     dataloader = DataLoader(dataset, batch_size=1)
-    metrics = evaluate_e2e(model, dataloader, dataset.info_T, args["device"])
+    metrics = evaluate_e2e(model, dataloader, dataset.info_T, args["device"], info_v=dataset.info_v)
     print("Metrics vs label:", *[f"  {k}: {v:.4f}" for k, v in metrics.items()], sep="\n")
     save_yaml(metrics, args["destination"] / f"metrics_{runid.replace('.pt', '')}.yaml")
     visualize_e2e(model, dataloader, args, plot_path=args["destination"] / f"inference_{runid.replace('.pt', '')}.png")

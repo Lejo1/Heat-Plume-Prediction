@@ -9,8 +9,9 @@ class LGCNNEndToEnd(Model):
     """End-to-end LGCNN: CNN1 (pki -> v) -> differentiable streamlines -> CNN2 (ixydkc -> T).
 
     Input x: [B, 3, H, W] with channels ordered as in the pki dataset (p=0, k=1, i=2), normalized.
-    Output: [B, 1, h, w] normalized temperature, spatially smaller than the input because both
-    UNets use valid (no-padding) convolutions.
+    Output: [B, 3, h, w] with channels [T, vx, vy] (normalized): the temperature prediction plus
+    CNN1's velocity prediction center-cropped to the same size (for the auxiliary velocity loss).
+    Spatially smaller than the input because both UNets use valid (no-padding) convolutions.
 
     CNN1's normalized velocity output feeds CNN2 directly (both datasets share the same Rescale
     stats); only the streamline tracer needs physical velocities, obtained by the differentiable
@@ -71,4 +72,9 @@ class LGCNNEndToEnd(Model):
         x_T = torch.cat([x_crop[:, self.IDX_I:self.IDX_I+1], v_norm, sf,
                          x_crop[:, self.IDX_K:self.IDX_K+1], sf_outer], dim=1)
         self.last_intermediates = {"v_norm": v_norm.detach(), "sf": sf.detach(), "sf_outer": sf_outer.detach()}
-        return self.unet_T(x_T)
+        T_pred = self.unet_T(x_T)
+
+        # append v center-cropped to T's size, so the auxiliary velocity loss can supervise CNN1
+        ht, wt = T_pred.shape[2:]
+        it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2
+        return torch.cat([T_pred, v_norm[:, :, it:it+ht, jt:jt+wt]], dim=1)

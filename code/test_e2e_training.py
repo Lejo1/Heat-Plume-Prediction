@@ -15,10 +15,10 @@ import time
 from pathlib import Path
 
 import torch
-from torch.nn import MSELoss
 
 sys.path.insert(0, str(Path(__file__).parent))
 from preprocessing.datasets.dataset import DataPointE2E
+from processing.loss_fcts import E2ELoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 
 PATH_DATA_PREP = Path(__file__).parents[2] / "datasets_prep"
@@ -48,26 +48,29 @@ if __name__ == "__main__":
     model = LGCNNEndToEnd(v_stats=dataset.info_v["Labels"], unet_args=unet_args,
                           randomK_data=True, t_steps=500, sigma=1.0).float().to(DEVICE)
 
-    # 1. forward: shapes
+    # 1. forward: shapes ([T, vx, vy] output)
     t0 = time.time()
     y_pred = model(x)
-    print(f"forward {time.time()-t0:.1f}s: input {tuple(x.shape)} -> T prediction {tuple(y_pred.shape)}")
-    assert y_pred.shape[1] == 1 and y_pred.shape[2] < CROP and y_pred.shape[3] < CROP
+    print(f"forward {time.time()-t0:.1f}s: input {tuple(x.shape)} -> prediction {tuple(y_pred.shape)}")
+    assert y_pred.shape[1] == 3 and y_pred.shape[2] < CROP and y_pred.shape[3] < CROP
+    assert y.shape[1] == 3, "label must carry [T, vx, vy]"
     assert model.last_intermediates["sf"].max() > 0, "no streamlines drawn"
 
     # 2. gradient reaches CNN1 through the streamlines
-    loss_fct = MSELoss()
-    loss = loss_fct(y_pred, center_crop_like(y, y_pred))
+    # IMPORTANT: lambda_v=0 here - with lambda_v>0, CNN1 receives gradient directly through the
+    # v output channels, which would mask a broken streamline path
+    loss = E2ELoss(lambda_v=0.0)(y_pred, center_crop_like(y, y_pred))
     t0 = time.time()
     loss.backward()
     first_conv_weight = next(p for n, p in model.unet_v.named_parameters() if "weight" in n)
     g_v = float(first_conv_weight.grad.abs().max())
     g_T = float(next(p for n, p in model.unet_T.named_parameters() if "weight" in n).grad.abs().max())
     print(f"backward {time.time()-t0:.1f}s: |grad| CNN1 first conv {g_v:.2e} | CNN2 first conv {g_T:.2e}")
-    assert g_v > 0, "no gradient reached CNN1 - end-to-end chain is broken!"
+    assert g_v > 0, "no gradient reached CNN1 through the streamlines - end-to-end chain is broken!"
     assert g_T > 0, "no gradient reached CNN2"
 
-    # 3. a few optimizer steps (with gradient clipping, as in Solver) reduce the loss
+    # 3. a few optimizer steps with the combined loss (and gradient clipping, as in Solver)
+    loss_fct = E2ELoss(lambda_v=0.5)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     losses = []
     for step in range(4):

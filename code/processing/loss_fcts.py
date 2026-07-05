@@ -18,6 +18,25 @@ class CombiLoss(nn.Module):
         eval_second = self.secondary_loss_function(predictions, labels)
 
         return self.alpha * self.mse(predictions, labels) + (1. - self.alpha) * eval_second
+
+
+class E2ELoss(nn.Module):
+    """
+    Loss for the end-to-end LGCNN: MSE(T) + lambda_v * MSE(v).
+    Predictions and labels carry 3 channels [T, vx, vy] (normalized units, comparable scales).
+    lambda_v = 0 recovers the pure temperature loss.
+    """
+    def __init__(self, lambda_v: float = 0.5):
+        super(E2ELoss, self).__init__()
+        self.mse = nn.MSELoss()
+        self.lambda_v = lambda_v
+        self.name = rf"E2ELoss (lambda_v={lambda_v})"
+
+    def forward(self, predictions, labels):
+        loss_T = self.mse(predictions[:, 0:1], labels[:, 0:1])
+        if self.lambda_v == 0:
+            return loss_T
+        return loss_T + self.lambda_v * self.mse(predictions[:, 1:3], labels[:, 1:3])
     
 
 class SSIMLoss(nn.Module):

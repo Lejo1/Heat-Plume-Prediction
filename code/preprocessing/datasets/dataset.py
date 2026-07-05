@@ -72,12 +72,14 @@ class DataPointE2E(Dataset):
     """Full-domain datapoint for end-to-end LGCNN training: joins two prepared datasets.
 
     x: normalized pki inputs from `<dataset> inputs_pki outputs_xy`,
-    y: normalized T label from `<dataset> inputs_ixyk outputs_t for_s`.
+    y: 3 channels [T, vx, vy] - normalized T label from `<dataset> inputs_ixyk outputs_t for_s`
+       plus the normalized simulated velocities from the pki dataset's Labels (used by the
+       auxiliary velocity loss).
     Both prep dirs are produced by LGCNN_step2.py (STEP 1); their normalization stats for the
     shared channels (i, k, vx, vy) are identical by construction.
     """
     input_channels = 3   # p, k, i
-    output_channels = 1  # T
+    output_channels = 3  # T + vx + vy
 
     def __init__(self, prep_dir:pathlib.Path, dataset_name:str, i:int=0):
         Dataset.__init__(self)
@@ -100,5 +102,6 @@ class DataPointE2E(Dataset):
 
     def __getitem__(self, idx):
         input = torch.load(self.path_v / "Inputs" / self.input_names[idx])
-        label = torch.load(self.path_T / "Labels" / self.label_names[idx])
-        return input, label
+        label_T = torch.load(self.path_T / "Labels" / self.label_names[idx])
+        label_v = torch.load(self.path_v / "Labels" / self.label_names[idx])
+        return input, torch.cat([label_T, label_v])
