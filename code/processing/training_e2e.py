@@ -9,13 +9,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torch.nn import MSELoss
+from torch.nn import MSELoss, L1Loss, HuberLoss
 from torch.utils.data import DataLoader
 
 from preprocessing.datasets.dataset import DataPointE2E
+from processing.loss_fcts import SSIMLoss, PATLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.solver import Solver
 from processing.training import load_hyperparams
+from utils.utils_args import save_yaml
 
 
 def training_e2e(args: Dict, PATH_DATA_PREP: Path):
@@ -72,7 +74,40 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time.total_seconds(), args["device"])
 
     visualize_e2e(model, dataloaders["val"], args, plot_path=args["destination"] / "val_e2e.png")
+
+    if "test" in dataloaders:
+        metrics_test = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"])
+        save_yaml(metrics_test, args["destination"] / "measurements_test.yaml")
+        print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
+        visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
     return model
+
+
+def evaluate_e2e(model, dataloader, info_T, device):
+    """Paper-style metrics of the full e2e pipeline. Temperature metrics are computed in [degC]
+    (de-normalized), SSIM on the normalized fields (same convention as eval_metrics.py)."""
+    stats = info_T["Labels"]["Temperature [C]"]
+    delta = stats["max"] - stats["min"]
+    mse, mae, huber = MSELoss(), L1Loss(), HuberLoss()
+    model.eval()
+    collected = []
+    with torch.no_grad():
+        for x, y in dataloader:
+            y_pred = model(x.to(device)).cpu()
+            h, w = y_pred.shape[2:]
+            i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
+            y_crop = y[:, :, i0:i0+h, j0:j0+w]
+            pred_C, label_C = y_pred * delta + stats["min"], y_crop * delta + stats["min"]
+            collected.append({
+                "MAE [degC]": float(mae(pred_C, label_C)),
+                "RMSE [degC]": float(mse(pred_C, label_C)) ** 0.5,
+                "Huber [degC]": float(huber(pred_C, label_C)),
+                "Linf [degC]": float((pred_C - label_C).abs().max()),
+                "SSIM": float(SSIMLoss()(y_pred, y_crop)),
+                "PAT0.1 [%]": float(PATLoss([0.1])(pred_C, label_C).mean()),
+                "PAT1.0 [%]": float(PATLoss([1.0])(pred_C, label_C).mean()),
+            })
+    return {name: sum(m[name] for m in collected) / len(collected) for name in collected[0]}
 
 
 def visualize_e2e(model, dataloader, args, plot_path: Path):

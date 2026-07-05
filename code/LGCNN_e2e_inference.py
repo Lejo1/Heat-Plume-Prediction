@@ -16,10 +16,10 @@ import torch
 from preprocessing.datasets.dataset import DataPointE2E
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.training import load_hyperparams
-from processing.training_e2e import visualize_e2e
-from utils.utils_args import read_cla
+from processing.training_e2e import evaluate_e2e, visualize_e2e
+from utils.utils_args import read_cla, save_yaml
 
-PATH_DATA_PREP = Path("../datasets_prep")  # TODO: change to your path
+PATH_DATA_PREP = Path("../../datasets_prep")  # TODO: change to your path
 PATH_MODELS_DIR = Path("../runs")          # TODO: change to your path
 
 if __name__ == "__main__":
@@ -63,5 +63,8 @@ if __name__ == "__main__":
     print(f"Saved prediction ({tuple(T_pred_degC.shape)}, degC) to {out_pt}")
 
     from torch.utils.data import DataLoader
-    visualize_e2e(model, DataLoader(dataset, batch_size=1), args,
-                  plot_path=args["destination"] / f"inference_{runid.replace('.pt', '')}.png")
+    dataloader = DataLoader(dataset, batch_size=1)
+    metrics = evaluate_e2e(model, dataloader, dataset.info_T, args["device"])
+    print("Metrics vs label:", *[f"  {k}: {v:.4f}" for k, v in metrics.items()], sep="\n")
+    save_yaml(metrics, args["destination"] / f"metrics_{runid.replace('.pt', '')}.yaml")
+    visualize_e2e(model, dataloader, args, plot_path=args["destination"] / f"inference_{runid.replace('.pt', '')}.png")

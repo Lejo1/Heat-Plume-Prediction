@@ -89,7 +89,11 @@ def get_rk4_step(use_compile:bool):
         return rk4_step
     if _rk4_step_compiled is None:
         try:
-            _rk4_step_compiled = torch.compile(rk4_step, mode="reduce-overhead")
+            # deliberately NOT mode="reduce-overhead": its CUDA graphs cannot replay a step that
+            # is invoked thousands of times within one forward while all outputs still require
+            # backward ("Unable to hit fast path" warning, slower than eager). Plain inductor
+            # kernel fusion is what removes the per-step dispatch overhead.
+            _rk4_step_compiled = torch.compile(rk4_step)
         except Exception as e:
             print(f"WARNING: torch.compile failed ({e}), running RK4 without compilation")
             _compile_failed = True
