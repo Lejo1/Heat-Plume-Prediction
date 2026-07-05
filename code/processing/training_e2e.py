@@ -128,13 +128,18 @@ def visualize_e2e(model, dataloader, args, plot_path: Path):
     to_degC = lambda t: t * (stats["max"] - stats["min"]) + stats["min"]
     T_pred, T_label = to_degC(y_pred[0, 0]), to_degC(y_crop[0, 0])
 
+    # shared color scales: prediction/label T on one, vx/vy on one - so panels are comparable
+    T_lim = (min(float(T_pred.min()), float(T_label.min())), max(float(T_pred.max()), float(T_label.max())))
+    v_lim = (float(v_norm.min()), float(v_norm.max()))
+
     fig, axes = plt.subplots(2, 3, figsize=(18, 11))
-    panels = [(T_pred, "prediction T [degC]", "RdBu_r", None), (T_label, "label T [degC]", "RdBu_r", None),
+    panels = [(T_pred, "prediction T [degC]", "RdBu_r", T_lim), (T_label, "label T [degC]", "RdBu_r", T_lim),
               ((T_pred - T_label).abs(), "abs error [degC]", "magma", None),
-              (v_norm[0], "predicted vx (normed)", "viridis", None), (v_norm[1], "predicted vy (normed)", "viridis", None),
+              (v_norm[0], "predicted vx (normed)", "viridis", v_lim), (v_norm[1], "predicted vy (normed)", "viridis", v_lim),
               (sf + sf_outer, "streamlines (soft, sf + sf_outer)", "magma", None)]
-    for ax, (data, title, cmap, _) in zip(axes.flat, panels):
-        im = ax.imshow(data.numpy().T, origin="lower", cmap=cmap, interpolation="nearest")
+    for ax, (data, title, cmap, lim) in zip(axes.flat, panels):
+        vmin, vmax = lim if lim is not None else (None, None)
+        im = ax.imshow(data.numpy().T, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
         ax.set_title(title, fontsize=10)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.tight_layout()
