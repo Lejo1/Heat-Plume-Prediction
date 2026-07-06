@@ -12,9 +12,11 @@ import torch
 from torch.nn import MSELoss, L1Loss, HuberLoss
 from torch.utils.data import DataLoader
 
-from preprocessing.datasets.dataset import DataPointE2E
+from preprocessing.datasets.dataset import DataPoint, DataPointE2E
+from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
 from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
+from processing.networks.model import weights_init
 from processing.solver import Solver
 from processing.training import load_hyperparams
 from utils.utils_args import save_yaml
@@ -54,21 +56,55 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     if args["case"] == "test":
         model.eval()
 
+    if args["case"] == "train":
+        # initialize both UNets ONCE here; the Solvers below run with finetune=True so that
+        # stage 2 does not wipe the stage-1 weights of unet_v
+        model.apply(weights_init)
+
+    # STAGE 1: pretrain CNN1 (unet_v) alone on the velocity task with the partitioned dataset
+    # (~1000 patch-batches per epoch instead of 1 full-domain step; no streamlines/CNN2 -> cheap)
+    if args["case"] == "train" and args.get("stage1_epochs", 0) > 0:
+        cuts_train = SimulationDatasetCuts(dataset_train.path_v, skip_per_dir=args["skip_per_dir"],
+                                           box_size=args["len_box"], ids=order[0])
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        dataloaders_v = {"train": DataLoader(cuts_train, batch_size=args["batchsize"], shuffle=True, num_workers=0),
+                         "val": DataLoader(val_v, batch_size=1, shuffle=False, num_workers=0)}
+        args_stage1 = {**args, "epochs": args["stage1_epochs"], "destination": args["destination"] / "stage1_v"}
+        args_stage1["destination"].mkdir(parents=True, exist_ok=True)
+
+        solver_v = Solver(model.unet_v, dataloaders_v["train"], dataloaders_v["val"],
+                          loss_func=MSELoss(), finetune=True, learning_rate=args["lr"])
+        solver_v.lr_schedule = {0: args["lr"]}
+        print(f"STAGE 1: velocity pretraining, {len(dataloaders_v['train'])} patch-batches/epoch, {args['stage1_epochs']} epochs")
+        stage1_time = datetime.now()
+        try:
+            solver_v.train(args_stage1)
+        except KeyboardInterrupt:
+            logging.warning(f"Manually stopping stage 1 early with best model found in epoch {solver_v.best_model_params['epoch']}.")
+        finally:
+            solver_v.save_lr_schedule(args_stage1["destination"] / "learning_rate_history.csv")
+        print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+
+    # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
     if args["case"] in ["train", "finetune"]:
         # loss = MSE(T) + lambda_v * MSE(v); lambda_v=0 (or missing key) = pure temperature loss.
         # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
         solver = Solver(model, dataloaders["train"], dataloaders["val"],
                         loss_func=E2ELoss(lambda_v=args.get("lambda_v", 0.0)),
-                        finetune=(args["case"] == "finetune"), learning_rate=args["lr"],
+                        finetune=True, learning_rate=args["lr"],
                         clip_grad_norm=args.get("clip_grad", 1.0))
+        # programmatic schedule instead of load_lr_schedule: the fallback default_lr_schedule.csv
+        # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied
+        solver.lr_schedule = {0: args["lr"], int(0.7 * args["epochs"]): args["lr"] / 10}
+        print(f"STAGE 2: joint end-to-end training, {args['epochs']} epochs")
         training_time = datetime.now()
         try:
-            solver.load_lr_schedule(args["destination"] / "learning_rate_history.csv")
             solver.train(args)
         except KeyboardInterrupt:
             logging.warning(f"Manually stopping training early with best model found in epoch {solver.best_model_params['epoch']}.")
         finally:
-            solver.save_lr_schedule(args["destination"] / "learning_rate_history.csv")
+            solver.save_lr_schedule(args["destination"] / "learning_rate_history_stage2.csv")
             print("Training finished")
 
         training_time = datetime.now() - training_time
@@ -84,6 +120,20 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
         visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
     return model
+
+
+def print_velocity_mae(unet_v, dataset_val, info_v, device):
+    """Stage-1 diagnostic: velocity MAE on the val datapoint in [m/y] (paper Step-1: 22.3/32.7)."""
+    unet_v.eval()
+    x, y = dataset_val[0]
+    with torch.no_grad():
+        v_pred = unet_v(x.unsqueeze(0).to(device)).cpu()
+    h, w = v_pred.shape[2:]
+    i0, j0 = (y.shape[1] - h) // 2, (y.shape[2] - w) // 2
+    y_crop = y[:, i0:i0+h, j0:j0+w].unsqueeze(0)
+    for ch, name in [(0, "Liquid X-Velocity [m_per_y]"), (1, "Liquid Y-Velocity [m_per_y]")]:
+        delta = info_v["Labels"][name]["max"] - info_v["Labels"][name]["min"]
+        print(f"  stage-1 val MAE v{'x' if ch == 0 else 'y'}: {float((v_pred[:, ch] - y_crop[:, ch]).abs().mean() * delta):.1f} m/y")
 
 
 def evaluate_e2e(model, dataloader, info_T, device, info_v=None):

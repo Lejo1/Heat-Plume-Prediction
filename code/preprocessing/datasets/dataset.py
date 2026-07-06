@@ -93,9 +93,10 @@ class DataPointE2E(Dataset):
             self.info_T = yaml.safe_load(f)
         self.norm_T = NormalizeTransform(self.info_T)  # for de-normalizing T in plots/inference
 
-        run_id = get_run_ids_from_prep(self.path_v / "Inputs")[i]
-        self.input_names = [f"RUN_{run_id}.pt"]
-        self.label_names = [f"RUN_{run_id}.pt"]
+        run_ids_all = get_run_ids_from_prep(self.path_v / "Inputs")
+        ids = [i] if isinstance(i, int) else i
+        self.input_names = sorted(f"RUN_{run_ids_all[ii]}.pt" for ii in ids)
+        self.label_names = list(self.input_names)
 
     def __len__(self):
         return len(self.input_names)

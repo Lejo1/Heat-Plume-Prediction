@@ -15,11 +15,14 @@ import time
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent))
 from preprocessing.datasets.dataset import DataPointE2E
+from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
 from processing.loss_fcts import E2ELoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
+from processing.networks.unetVariants import UNetNoPad2
 
 PATH_DATA_PREP = Path(__file__).parents[2] / "datasets_prep"
 DATASET_NAME = "dataset_giant_100hp_varyK"
@@ -35,8 +38,29 @@ def center_crop_like(y, y_pred):
 
 if __name__ == "__main__":
     torch.manual_seed(0)
+
+    # 0. stage-1 wiring: partitioned velocity training (SimulationDatasetCuts on the pki dataset)
     dataset = DataPointE2E(PATH_DATA_PREP, DATASET_NAME, i=0)
+    cuts = SimulationDatasetCuts(dataset.path_v, skip_per_dir=16, box_size=256, ids=0)
+    unet_v = UNetNoPad2(in_channels=3, out_channels=2, depth=2, init_features=8, kernel_size=5,
+                        stride=1, dilation=1, activation="ReLU", norm="batchnorm", repeat_inner=False).float()
+    opt_v = torch.optim.Adam(unet_v.parameters(), lr=1e-3)
+    loader = DataLoader(cuts, batch_size=8, shuffle=True)
+    v_losses = []
+    for bi, (xb, yb) in enumerate(loader):
+        if bi == 6:
+            break
+        opt_v.zero_grad()
+        vb = unet_v(xb)
+        loss_v = torch.nn.functional.mse_loss(vb, center_crop_like(yb, vb))
+        loss_v.backward()
+        opt_v.step()
+        v_losses.append(float(loss_v.detach()))
+    print(f"stage-1 smoke: {len(cuts)} patches available, v-loss {v_losses[0]:.4f} -> {v_losses[-1]:.4f} over {len(v_losses)} batches")
+    assert v_losses[-1] < v_losses[0], f"stage-1 velocity loss did not decrease: {v_losses}"
     x, y = dataset[0]
+    torch.manual_seed(0)  # decouple from the RNG use of the stage-1 section: the gradient check
+    # below is init-sensitive (chaotic backward can overflow to inf/NaN for unlucky random nets)
     x = x[:, :CROP, :CROP].unsqueeze(0).to(DEVICE)   # [1, 3, CROP, CROP]
     y = y[:, :CROP, :CROP].unsqueeze(0).to(DEVICE)   # [1, 1, CROP, CROP]
     n_hps = int((x[0, LGCNNEndToEnd.IDX_I] == 1.0).sum())
