@@ -93,19 +93,24 @@ def get_rk4_step(use_compile:bool):
             # is invoked thousands of times within one forward while all outputs still require
             # backward ("Unable to hit fast path" warning, slower than eager). Plain inductor
             # kernel fusion is what removes the per-step dispatch overhead.
-            _rk4_step_compiled = torch.compile(rk4_step)
+            # dynamic=True: the number of traced points varies per window in patch-based e2e
+            # training - static shapes would trigger a full recompile for every new count.
+            _rk4_step_compiled = torch.compile(rk4_step, dynamic=True)
         except Exception as e:
             print(f"WARNING: torch.compile failed ({e}), running RK4 without compilation")
             _compile_failed = True
             return rk4_step
     return _rk4_step_compiled
 
-def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5, use_compile:bool=False):
+def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5, use_compile:bool=False, t_offsets=None):
     # Solve for all start points at once with fixed-step RK4. The step count is chosen so that
     # no point moves more than max_step_cells per step; the coarse solution is then linearly
     # upsampled to t_steps samples for drawing.
     # Differentiable: gradients flow through the RK4 steps and the bilinear velocity sampling
     # (wrap calls in torch.no_grad() when gradients are not needed, it is much faster).
+    # t_offsets (per start point): absolute start times for resumed line segments; the returned
+    # t arrays are absolute and lines are additionally cut where their absolute time exceeds
+    # t_end (so a resumed segment ends exactly where the original line would).
     global _compile_failed
     x = torch.as_tensor(start_points, dtype=torch.float32).clone()
     v_max = float(velocity.detach().norm(dim=0).max())  # only picks the step count, no gradient needed
@@ -138,8 +143,15 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
     w = (pos - idx).reshape(1, -1, 1)
     fine = trajectory[:, idx] * (1 - w) + trajectory[:, idx + 1] * w
 
-    # cut each line where it first leaves the domain (0..x.max(), 0..y.max())
+    # cut each line where it first leaves the domain (0..x.max(), 0..y.max()) or exceeds t_end
     inside = (fine[:,:,0] >= 0) & (fine[:,:,0] <= maxs_xy[0]) & (fine[:,:,1] >= 0) & (fine[:,:,1] <= maxs_xy[1])
+    if t_offsets is not None:
+        t_offsets = torch.as_tensor(t_offsets, dtype=torch.float32, device=fine.device)
+        t_abs = t.unsqueeze(0) + t_offsets.unsqueeze(1)  # (n_lines, t_steps)
+        inside = inside & (t_abs <= t_end)
+        lengths = torch.cumprod(inside.long(), dim=1).sum(dim=1)
+        return [(line[:length,0], line[:length,1], t_row[:length])
+                for line, t_row, length in zip(fine, t_abs, lengths)]
     lengths = torch.cumprod(inside.long(), dim=1).sum(dim=1)  # samples before first exit
     return [(line[:length,0], line[:length,1], t[:length]) for line, length in zip(fine, lengths)]
 
@@ -155,12 +167,18 @@ def draw_streamlines(image_data:torch.Tensor, streamlines:list, faded:bool=False
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
-def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None):
+def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None,
+                          fade_mode:str="per_line", t_end:float=27.5, return_density:bool=False):
     # Differentiable version of draw_streamlines: instead of setting single cells (gradient zero
     # almost everywhere), every sample spreads a normalized Gaussian over its window x window
     # neighborhood. Samples are weighted by their arc length ds, so a cell's density is the
     # faded line length crossing it (independent of the time-sampling density) and does not
     # saturate where samples are dense. occupancy = 1 - exp(-density) keeps values in [0,1).
+    # fade_mode "per_line": fade 1 -> 0 over each line's visible segment (original convention);
+    # "absolute": fade = 1 - t/t_end from the (possibly absolute) t values - window-invariant,
+    # required when line segments are cut/resumed at patch borders.
+    # return_density=True skips the final saturation: densities are additive over line sets, so
+    # partial drawings can be composed/subtracted exactly before applying 1 - exp(-.) once.
     if window is None:
         window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
     device = streamlines[0][0].device if streamlines else "cpu"
@@ -176,7 +194,12 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
         seg = ((sol_x[1:]-sol_x[:-1])**2 + (sol_y[1:]-sol_y[:-1])**2 + 1e-12).sqrt()
         zero = seg.new_zeros(1)
         ds = (torch.cat([seg, zero]) + torch.cat([zero, seg])) / 2  # arc length per sample
-        fade = 1 - t/t[-1] if faded else torch.ones_like(t)
+        if not faded:
+            fade = torch.ones_like(t)
+        elif fade_mode == "absolute":
+            fade = (1 - t/t_end).clamp(min=0)
+        else:  # per_line
+            fade = 1 - t/t[-1]
         # cells around each sample; which cell a blob lands in is discrete -> detached,
         # the smooth kernel below carries the gradient
         cells_i = (sol_x + 0.5).floor().detach().unsqueeze(1) + off_i
@@ -185,10 +208,11 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
         w = torch.exp(-d2/(2*sigma**2)) / (2*np.pi*sigma**2) * (fade*ds).unsqueeze(1)
         mask = (cells_i >= 0) & (cells_i < dims[0]) & (cells_j >= 0) & (cells_j < dims[1])
         density.index_put_((cells_i[mask].long(), cells_j[mask].long()), w[mask], accumulate=True)
-    return 1 - torch.exp(-density)
+    return density if return_density else 1 - torch.exp(-density)
 
 def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
-                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False):
+                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False,
+                        fade_mode:str="per_line", return_density:bool=False):
     # Differentiable forward pass of step 2: trace streamlines for all offsets in one batch and
     # rasterize each offset group to a soft-occupancy image (one image per offset).
     # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
@@ -204,7 +228,8 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
 
     velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
     streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps, use_compile=use_compile)
-    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma)
+    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma,
+                                  fade_mode=fade_mode, return_density=return_density)
             for i in range(len(offsets))]
 
 def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK_data:bool=False, faded:bool=True,

@@ -4,8 +4,14 @@ data_prep:
 data_raw: ../datasets/dataset_giant_100hp_varyK
 destination:
 device: cuda
-epochs: 500        # stage 2 (joint full-pipeline training; 1 optimizer step per epoch and datapoint)
-stage1_epochs: 30  # stage 1: pretrain CNN1 on velocities with the partitioned dataset (~1000 patch-batches/epoch); 0 = skip
+epochs: 200            # stage 2 epochs (patched mode: updates_per_epoch window updates each)
+stage1_epochs: 30      # stage 1: pretrain CNN1 on velocities with the partitioned dataset (~1000 patch-batches/epoch); 0 = skip
+stage2_mode: patched   # "patched": cheap window updates vs cached global context | "full": one full-domain step per epoch
+window: 512            # CNN1 input size per window update (interior = window - 2*CNN1 border)
+refresh_every: 50      # rebuild the cached full-domain context every N updates (per datapoint)
+updates_per_epoch: 100 # window updates per "epoch" (then full-domain validation)
+t_steps_window: 2000   # RK4/drawing samples cap for window-local streamline traces
+fade_mode: absolute    # streamline fading 1 - t/t_end: window-invariant (patch training == inference); "per_line" = paper convention
 inputs: pki
 model: null
 notes: end-to-end LGCNN (CNN1 + differentiable streamlines + CNN2), pure T loss, from scratch

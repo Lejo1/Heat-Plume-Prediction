@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
+from processing.e2e_patched import train_stage2_patched
 from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.model import weights_init
@@ -48,7 +49,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                      norm=args["norm"], repeat_inner=args["repeat_inner"])
     model = LGCNNEndToEnd(v_stats=dataset_train.info_v["Labels"], unet_args=unet_args,
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
-                          use_compile=args.get("compile", False)).float()
+                          use_compile=args.get("compile", False),
+                          fade_mode=args.get("fade_mode", "per_line")).float()
     model.to(args["device"])
 
     if args["case"] in ["test", "finetune"]:
@@ -86,8 +88,17 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
         print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
 
-    # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
-    if args["case"] in ["train", "finetune"]:
+    # STAGE 2 (patched): joint training with cheap window updates against a cached global context
+    if args["case"] in ["train", "finetune"] and args.get("stage2_mode", "full") == "patched":
+        training_time = datetime.now()
+        metrics = train_stage2_patched(model, dataset_train, dataset_val, args)
+        print("Training finished")
+        model.save(args["destination"])
+        metrics["no_params"] = model.num_of_params()
+        save_yaml(metrics, args["destination"] / "measurements.yaml")
+
+    # STAGE 2 (full): joint training of the full pipeline, one full-domain step per epoch
+    elif args["case"] in ["train", "finetune"]:
         # loss = MSE(T) + lambda_v * MSE(v); lambda_v=0 (or missing key) = pure temperature loss.
         # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
         solver = Solver(model, dataloaders["train"], dataloaders["val"],
