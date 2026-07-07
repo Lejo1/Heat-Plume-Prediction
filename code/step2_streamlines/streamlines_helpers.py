@@ -47,9 +47,10 @@ def build_new_info(info:dict, info_vx:dict, info_vy:dict):
     info["Inputs"]["Liquid Y-Velocity [m_per_y]"]["index"] = 2
 
 # data processing + streamline calculation
-def build_velocity_grid(vx, vy, dims, randomK_data:bool=False):
-    vx = torch.as_tensor(vx, dtype=torch.float32)
-    vy = torch.as_tensor(vy, dtype=torch.float32)
+def build_velocity_grid(vx, vy, dims, randomK_data:bool=False, dtype=torch.float32):
+    # dtype float64 is only needed for gradient verification (autograd.gradcheck)
+    vx = torch.as_tensor(vx, dtype=dtype)
+    vy = torch.as_tensor(vy, dtype=dtype)
     if randomK_data:
         u_axis0, u_axis1 = vy, vx
     else:
@@ -112,7 +113,7 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
     # t arrays are absolute and lines are additionally cut where their absolute time exceeds
     # t_end (so a resumed segment ends exactly where the original line would).
     global _compile_failed
-    x = torch.as_tensor(start_points, dtype=torch.float32).clone()
+    x = torch.as_tensor(start_points, dtype=velocity.dtype).clone()  # dtype follows the velocity grid
     v_max = float(velocity.detach().norm(dim=0).max())  # only picks the step count, no gradient needed
     n_int = max(min(int(np.ceil(t_end * v_max / max_step_cells)), t_steps - 1), 16)
     dt = t_end / n_int
@@ -120,9 +121,9 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
     step_fn = get_rk4_step(use_compile)
     # dt as 0-d tensor for the compiled path: a python float would be baked into the compiled
     # graph as a constant and trigger a recompilation whenever the step size changes
-    dt_arg = torch.tensor(dt, dtype=torch.float32, device=x.device) if step_fn is not rk4_step else dt
+    dt_arg = torch.tensor(dt, dtype=velocity.dtype, device=x.device) if step_fn is not rk4_step else dt
 
-    trajectory = torch.empty((x.shape[0], n_int+1, 2), device=x.device)
+    trajectory = torch.empty((x.shape[0], n_int+1, 2), dtype=x.dtype, device=x.device)
     trajectory[:,0] = x
     for i in range(n_int):
         try:
@@ -137,7 +138,7 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
         trajectory[:,i+1] = x
 
     # linear upsampling to t_steps samples, vectorized over all lines
-    t = torch.linspace(0, t_end, t_steps, device=x.device)
+    t = torch.linspace(0, t_end, t_steps, dtype=x.dtype, device=x.device)
     pos = t / dt
     idx = pos.long().clamp(max=n_int - 1)
     w = (pos - idx).reshape(1, -1, 1)
@@ -146,7 +147,7 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, 
     # cut each line where it first leaves the domain (0..x.max(), 0..y.max()) or exceeds t_end
     inside = (fine[:,:,0] >= 0) & (fine[:,:,0] <= maxs_xy[0]) & (fine[:,:,1] >= 0) & (fine[:,:,1] <= maxs_xy[1])
     if t_offsets is not None:
-        t_offsets = torch.as_tensor(t_offsets, dtype=torch.float32, device=fine.device)
+        t_offsets = torch.as_tensor(t_offsets, dtype=x.dtype, device=fine.device)
         t_abs = t.unsqueeze(0) + t_offsets.unsqueeze(1)  # (n_lines, t_steps)
         inside = inside & (t_abs <= t_end)
         lengths = torch.cumprod(inside.long(), dim=1).sum(dim=1)
@@ -182,9 +183,10 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     if window is None:
         window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
     device = streamlines[0][0].device if streamlines else "cpu"
-    density = torch.zeros(tuple(dims), device=device)
+    dtype = streamlines[0][0].dtype if streamlines else torch.float32
+    density = torch.zeros(tuple(dims), dtype=dtype, device=device)
     half = window // 2
-    offs = torch.arange(-half, half+1, dtype=torch.float32, device=device)
+    offs = torch.arange(-half, half+1, dtype=dtype, device=device)
     off_i, off_j = torch.meshgrid(offs, offs, indexing='ij')
     off_i = off_i.reshape(1,-1)
     off_j = off_j.reshape(1,-1)

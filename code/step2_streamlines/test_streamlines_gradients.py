@@ -72,6 +72,30 @@ def occupancy_loss(mat_ids, vx, vy, dims):
     return float(occ.double().sum())
 
 
+def gradcheck_streamlines():
+    """torch.autograd.gradcheck: verifies the analytical Jacobian of the trace+draw chain
+    element-by-element against float64 central differences on a tiny problem.
+    Needs float64 (the production pipeline is float32) and a slow, smooth velocity field so no
+    line is cut at the domain boundary (cuts are discrete events - genuinely non-differentiable
+    points where a Jacobian comparison must not sit)."""
+    dims_gc = (16, 12)
+    xx, yy = np.meshgrid(np.arange(dims_gc[0]), np.arange(dims_gc[1]), indexing="ij")
+    vx0 = torch.tensor(0.5 + 0.1*np.sin(yy/3.), dtype=torch.float64, requires_grad=True)
+    vy0 = torch.tensor(0.2*np.cos(xx/4.), dtype=torch.float64, requires_grad=True)
+    starts = torch.tensor([[4.5, 3.5], [8.5, 6.5]], dtype=torch.float64)
+
+    def f(vx_in, vy_in):
+        velocity = build_velocity_grid(vx_in, vy_in, dims_gc, dtype=torch.float64)
+        lines = calc_streamlines(starts, velocity, (dims_gc[0]-1, dims_gc[1]-1), t_end=4.0, t_steps=48)
+        occ = draw_streamlines_soft(lines, dims_gc, faded=True, sigma=0.8, fade_mode="absolute", t_end=4.0)
+        return occ.sum()
+
+    t0 = time.time()
+    assert torch.autograd.gradcheck(f, (vx0, vy0), eps=1e-6, atol=1e-4, rtol=1e-3)
+    n = 2 * dims_gc[0] * dims_gc[1]
+    print(f"autograd.gradcheck PASSED ({n} partial derivatives verified element-wise, {time.time()-t0:.1f}s)")
+
+
 def finite_difference_check(mat_ids, vx, vy, dims, grad, component, n_cells=3, eps=0.5):
     """Compare d(loss)/d(v) against central finite differences at the strongest-gradient cells."""
     flat = grad.abs().flatten()
@@ -158,6 +182,8 @@ def plot_all(vx, vy, occ, grad_vx, grad_vy, starts, out_path):
 
 
 if __name__ == "__main__":
+    gradcheck_streamlines()
+
     runid = (sys.argv[1] if len(sys.argv) > 1 else "RUN_1").replace(".pt", "") + ".pt"
     mat_ids, vx, vy, dims = load_real_data(runid)
     starts = np.array(np.where(mat_ids == 2)).T
@@ -167,7 +193,8 @@ if __name__ == "__main__":
     t0 = time.time()
     occ, grad_vx, grad_vy = make_streamlines_gradients(mat_ids, vx, vy, dims, randomK_data=RANDOM_K,
                                                        t_steps=T_STEPS, sigma=SIGMA, faded=True, device=DEVICE)
-    print(f"forward+backward took {time.time()-t0:.1f}s")
+    t_autograd = time.time() - t0
+    print(f"forward+backward took {t_autograd:.1f}s")
     print(f"occupancy: sum {float(occ.sum()):.1f}, max {float(occ.max()):.3f}")
     print(f"|d/dvx| max {float(grad_vx.abs().max()):.5f} | |d/dvy| max {float(grad_vy.abs().max()):.5f}")
     assert grad_vx.abs().max() > 0 and grad_vy.abs().max() > 0, "gradients are all zero!"
@@ -175,6 +202,18 @@ if __name__ == "__main__":
     err_x = finite_difference_check(mat_ids, vx, vy, dims, grad_vx, "vx")
     err_y = finite_difference_check(mat_ids, vx, vy, dims, grad_vy, "vy")
     assert max(err_x, err_y) < 0.2, f"finite-difference mismatch: {max(err_x, err_y):.1%}"
+
+    # speed comparison: one backward pass yields ALL partial derivatives at once, one central
+    # difference yields exactly one - so the fair comparison is per full gradient
+    t0 = time.time()
+    occupancy_loss(mat_ids, vx, vy, dims)
+    t_eval = time.time() - t0
+    n_derivs = 2 * dims[0] * dims[1]
+    t_fd_full = n_derivs * 2 * t_eval
+    print(f"\nspeed comparison (full gradient = {n_derivs/1e6:.1f}M partial derivatives):")
+    print(f"  autograd (one forward+backward):      {t_autograd:8.1f} s")
+    print(f"  one FD central difference (2 fwd):    {2*t_eval:8.1f} s")
+    print(f"  -> full FD gradient extrapolates to ~{t_fd_full/86400/365.25:.1f} years; autograd is ~{t_fd_full/t_autograd:.0f}x faster")
 
     out = Path(__file__).parent / "test_streamlines_gradients.png"
     plot_all(vx, vy, occ, grad_vx, grad_vy, starts, out)
