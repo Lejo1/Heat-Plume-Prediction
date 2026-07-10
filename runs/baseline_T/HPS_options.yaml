@@ -1,0 +1,48 @@
+batchsize:
+  values:
+  - 20
+kernel_size:
+  values:
+  - 4
+depth:
+  values:
+  - 4
+init_features:
+  values:
+  - 32
+stride:
+  values:
+  - 1
+dilation:
+  values:
+  - 1
+activation_fct:
+  values:
+  - ReLU
+norm:
+  values:
+  - batchnorm
+repeat_inner:
+  values:
+  - False
+skip_per_dir:
+  values:
+  - 8
+len_box:
+  values:
+  - 256
+inputs:
+  values:
+    - ixydkc
+train_loss:
+  values:
+  - MAE
+bool_cutouts:
+  values:
+  - True
+optimizer_switch:
+  values:
+  - False
+lr:
+  values:
+  - 0.0001

@@ -1,0 +1,15 @@
+case: train
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+epochs: 50
+inputs: pki
+model: null
+notes: baseline step 1 (predict v), synthetic-permeability (varyK) dataset, DaRUS doi:10.18419/DARUS-4156
+outputs: xy
+visualize: false
+order_data:
+- 0
+- 1
+- 2
