@@ -23,7 +23,8 @@ class LGCNNEndToEnd(Model):
     # 0=Material ID, 1=vx, 2=vy, 3=Streamlines Faded, 4=Permeability, 5=Streamlines Faded Outer
 
     def __init__(self, v_stats: dict, unet_args: dict, randomK_data: bool = False,
-                 t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False):
+                 t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False,
+                 fade_mode: str = "absolute"):
         """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy)."""
         super().__init__()
         self.unet_v = UNetNoPad2(in_channels=3, out_channels=2, **unet_args)
@@ -43,6 +44,7 @@ class LGCNNEndToEnd(Model):
         self.sigma = sigma
         self.offsets = tuple(offsets)
         self.use_compile = use_compile
+        self.fade_mode = fade_mode  # "absolute" (default) or "per_line" (legacy/paper convention)
         self.last_intermediates = {}  # detached v/streamlines of the last forward, for plots
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -62,7 +64,7 @@ class LGCNNEndToEnd(Model):
             occs = trace_and_draw_soft(hp_positions, v_phys[b, 0], v_phys[b, 1], (h, w),
                                        offsets=self.offsets, randomK_data=self.randomK_data,
                                        faded=True, t_steps=self.t_steps, sigma=self.sigma,
-                                       use_compile=self.use_compile)
+                                       use_compile=self.use_compile, fade_mode=self.fade_mode)
             sf.append(occs[0])
             sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
         sf = torch.stack(sf).unsqueeze(1)          # [B, 1, h, w]

@@ -14,6 +14,7 @@ visualize: true
 randomK: true    # True for varyK datasets (flow main-direction switched)
 t_steps: 10000   # streamline samples; also caps the RK4 steps
 sigma: 1.0       # soft-drawing splat width in cells
+fade_mode: absolute  # streamline fading 1 - t/t_end (cut-invariant; "per_line" = legacy paper convention)
 clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
 lambda_v: 0.5    # weight of the auxiliary velocity loss: MSE(T) + lambda_v * MSE(v); 0/missing = pure T loss
 compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure

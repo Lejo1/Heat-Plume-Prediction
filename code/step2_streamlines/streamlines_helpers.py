@@ -156,12 +156,17 @@ def draw_streamlines(image_data:torch.Tensor, streamlines:list, faded:bool=False
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
-def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None):
+def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None,
+                          fade_mode:str="absolute", t_end:float=27.5):
     # Differentiable version of draw_streamlines: instead of setting single cells (gradient zero
     # almost everywhere), every sample spreads a normalized Gaussian over its window x window
     # neighborhood. Samples are weighted by their arc length ds, so a cell's density is the
     # faded line length crossing it (independent of the time-sampling density) and does not
     # saturate where samples are dense. occupancy = 1 - exp(-density) keeps values in [0,1).
+    # fade_mode "absolute" (default): fade = 1 - t/t_end - independent of where a line is cut,
+    # so patch/window training and full-domain inference see identical channel semantics.
+    # "per_line" (legacy, baseline comparability): fade 1 -> 0 over each line's visible segment,
+    # the paper convention used by the offline hard-drawn datasets.
     if window is None:
         window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
     device = streamlines[0][0].device if streamlines else "cpu"
@@ -178,7 +183,12 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
         seg = ((sol_x[1:]-sol_x[:-1])**2 + (sol_y[1:]-sol_y[:-1])**2 + 1e-12).sqrt()
         zero = seg.new_zeros(1)
         ds = (torch.cat([seg, zero]) + torch.cat([zero, seg])) / 2  # arc length per sample
-        fade = 1 - t/t[-1] if faded else torch.ones_like(t)
+        if not faded:
+            fade = torch.ones_like(t)
+        elif fade_mode == "absolute":
+            fade = (1 - t/t_end).clamp(min=0)
+        else:  # per_line
+            fade = 1 - t/t[-1]
         # cells around each sample; which cell a blob lands in is discrete -> detached,
         # the smooth kernel below carries the gradient
         cells_i = (sol_x + 0.5).floor().detach().unsqueeze(1) + off_i
@@ -190,7 +200,8 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     return 1 - torch.exp(-density)
 
 def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
-                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False):
+                        faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False,
+                        fade_mode:str="absolute"):
     # Differentiable forward pass of step 2: trace streamlines for all offsets in one batch and
     # rasterize each offset group to a soft-occupancy image (one image per offset).
     # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
@@ -206,11 +217,12 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
 
     velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
     streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps, use_compile=use_compile)
-    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma)
+    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma, fade_mode=fade_mode)
             for i in range(len(offsets))]
 
 def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK_data:bool=False, faded:bool=True,
-                               t_steps:int=2000, sigma:float=0.7, loss_fn=None, device=None, **kwargs):
+                               t_steps:int=2000, sigma:float=0.7, loss_fn=None, device=None,
+                               fade_mode:str="absolute", **kwargs):
     # Gradient of the drawn streamlines (occupancy) w.r.t. the velocity fields:
     # back-propagates loss_fn(occupancy) (default: total occupancy) through the soft drawing,
     # the RK4 integration and the bilinear velocity interpolation.
@@ -227,7 +239,8 @@ def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK
     vx = torch.as_tensor(vx, dtype=torch.float32).detach().clone().to(device).requires_grad_(True)
     vy = torch.as_tensor(vy, dtype=torch.float32).detach().clone().to(device).requires_grad_(True)
     occupancy = trace_and_draw_soft(pos_hps, vx, vy, dims, offsets=(0 if offset is None else offset,),
-                                    randomK_data=randomK_data, faded=faded, t_steps=t_steps, sigma=sigma)[0]
+                                    randomK_data=randomK_data, faded=faded, t_steps=t_steps, sigma=sigma,
+                                    fade_mode=fade_mode)[0]
 
     loss = occupancy.sum() if loss_fn is None else loss_fn(occupancy)
     loss.backward()
