@@ -89,6 +89,34 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
 
             collected_metrics[case][metric_name] = metrics[metric_name]
     save_yaml(collected_metrics, PATH_destination / f"metrics_paper25_{PATH_current_model.name} {PATH_current_data.name}.yaml")
+    return collected_metrics
+
+def plot_collected_metrics(collected_metrics, output_channels, save_path):
+    """Bar chart of all metrics for all evaluated cases (train / val / test), per output channel."""
+    cases = [c for c in ["train", "val", "test"] if c in collected_metrics]
+    metric_names = list(collected_metrics[cases[0]].keys())
+    channel_names = ["vx", "vy"] if output_channels == 2 else ["T"]
+    colors = {"train": "blue", "val": "green", "test": "coral"}
+
+    fig, axes = plt.subplots(1, len(metric_names), figsize=(3.2 * len(metric_names), 4))
+    for ax, metric_name in zip(np.atleast_1d(axes), metric_names):
+        labels, values, bar_colors = [], [], []
+        for case in cases:
+            vals = torch.atleast_1d(collected_metrics[case][metric_name])
+            for ch in range(len(vals)):
+                labels.append(f"{case} {channel_names[ch]}" if len(vals) > 1 else case)
+                values.append(float(vals[ch]))
+                bar_colors.append(colors[case])
+        ax.bar(range(len(values)), values, color=bar_colors)
+        ax.set_xticks(range(len(values)))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_title(metric_name, fontsize=9)
+        ax.grid(axis="y", linestyle="--", alpha=0.7)
+    fig.suptitle(f"{collected_metrics['model']}  on  {collected_metrics['data']}", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved metrics plot to {save_path}")
 
 def reverse_normalization(norm, inputs, labels, outputs):
     for tmp_in in inputs:
@@ -173,7 +201,7 @@ def metrics_of_one_model(file_name, n_outputs=2, directory=Path("."), run_ids=[1
             stds[case] = stds_tmp
             mins_maxs[case] = mins_maxs_tmp
         except:
-            printunmatched(f"{case} does not exist for {file_name}")
+            print(f"{case} does not exist for {file_name}")
             continue
     return metrics, {"means": means, "stds": stds, "mins_maxs": mins_maxs}
 
@@ -233,16 +261,23 @@ def plot_metrics(metrics, title):
 
 if __name__=="__main__":
 
-    # calculate metrics for one model
-    PATH_PREP_DATA = Path("../datasets_prep")
-    PATH_MODEL = Path("../models")
-    PATH_DESTINATION = Path("../metrics")
+    # calculate metrics for one model.
+    # IMPORTANT: the model and the prepared dataset must match in their channels, e.g. (baseline, run from repo root):
+    #   step 1 isolated:  runs/baseline_v + "... inputs_pki outputs_xy"                                    (pki -> v)
+    #   step 3 isolated:  runs/baseline_T + "... inputs_ixydk+s_outer outputs_t"                           (T on simulated v)
+    #   full pipeline:    runs/baseline_T + "... inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45" (T on predicted v)
+    PATH_PREP_DATA = Path("../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45") # TODO: change to your path
+    PATH_MODEL = Path("runs/baseline_v") # TODO: change to your path
+    PATH_DESTINATION = PATH_MODEL
     SCALING = False #or True, if it should be evaluated on the scaling test data
-    
+
     dataloaders, model, norm, info, args, output_channels = preparation(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, scaling=SCALING)
-    collect_metrics(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, args, output_channels)
+    collected = collect_metrics(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, args, output_channels)
+    plot_collected_metrics(collected, output_channels,
+                           PATH_DESTINATION / f"metrics_plot_{PATH_MODEL.name} {PATH_PREP_DATA.name}.png")
 
     # exemplary use on how to calculate mean, std, min and max for several runs of one set of hyperparameters
-    file_name = lambda run_id: f"metrics_run{run_id}.yaml"
-    metrics = metrics_of_one_model(file_name, n_outputs=1, directory=Path("runs") / "modelA_several_runs", run_ids=[1,2,3,4,5])
-    plot_metrics(metrics, "Title")
+    # (needs a folder with metrics_run<id>.yaml files from repeated trainings - disabled by default)
+    # file_name = lambda run_id: f"metrics_run{run_id}.yaml"
+    # metrics = metrics_of_one_model(file_name, n_outputs=1, directory=Path("runs") / "modelA_several_runs", run_ids=[1,2,3,4,5])
+    # plot_metrics(metrics, "Title")
