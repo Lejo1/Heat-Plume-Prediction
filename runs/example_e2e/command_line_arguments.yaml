@@ -5,7 +5,7 @@ data_raw: ../datasets/dataset_giant_100hp_varyK
 destination:
 device: cuda
 epochs: 500        # stage 2 (joint full-pipeline training; 1 optimizer step per epoch and datapoint)
-stage1_epochs: 30  # stage 1: pretrain CNN1 on velocities with the partitioned dataset (~1000 patch-batches/epoch); 0 = skip
+stage1_epochs: 50  # stage 1: pretrain CNN1 on velocities with the partitioned dataset (~1000 patch-batches/epoch; matches baseline_v's 50 epochs); 0 = skip
 inputs: pki
 model: null
 notes: end-to-end LGCNN (CNN1 + differentiable streamlines + CNN2), pure T loss, from scratch
