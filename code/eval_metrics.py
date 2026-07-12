@@ -91,6 +91,32 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
     save_yaml(collected_metrics, PATH_destination / f"metrics_paper25_{PATH_current_model.name} {PATH_current_data.name}.yaml")
     return collected_metrics
 
+def to_e2e_style(collected_metrics, output_channels):
+    """Convert collected metrics to exactly the names/units of the end-to-end evaluation
+    (processing/training_e2e.py: evaluate_e2e), for direct baseline-vs-e2e comparison.
+    Paper mapping: MAE=MAE, RMSE=sqrt(MSE), Huber=Huber, SSIM=SSIM (Linf/PAT are extras)."""
+    styled = {}
+    for case in [c for c in ["train", "val", "test"] if c in collected_metrics]:
+        m = {k: torch.atleast_1d(torch.as_tensor(v)) for k, v in collected_metrics[case].items()}
+        if output_channels == 1:  # temperature model
+            styled[case] = {
+                "MAE [degC]": float(m["MAE [phys. unit]"][0]),
+                "RMSE [degC]": float(m["MSE [phys. unit^2]"][0]) ** 0.5,
+                "Huber [degC]": float(m["Huber [phys. unit]"][0]),
+                "Linf [degC]": float(m["Linf [phys. unit]"][0]),
+                "SSIM": float(m["SSIM"][0]),
+                "PAT0.1 [%]": float(m["PAT0.1 [%]"][0]),
+                "PAT1.0 [%]": float(m["PAT1.0 [%]"][0]),
+            }
+        else:  # velocity model
+            styled[case] = {
+                "MAE vx [m/y]": float(m["MAE [phys. unit]"][0]),
+                "MAE vy [m/y]": float(m["MAE [phys. unit]"][1]),
+                "RMSE vx [m/y]": float(m["MSE [phys. unit^2]"][0]) ** 0.5,
+                "RMSE vy [m/y]": float(m["MSE [phys. unit^2]"][1]) ** 0.5,
+            }
+    return styled
+
 def plot_collected_metrics(collected_metrics, output_channels, save_path):
     """Bar chart of all metrics for all evaluated cases (train / val / test), per output channel."""
     cases = [c for c in ["train", "val", "test"] if c in collected_metrics]
@@ -275,6 +301,12 @@ if __name__=="__main__":
     collected = collect_metrics(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, args, output_channels)
     plot_collected_metrics(collected, output_channels,
                            PATH_DESTINATION / f"metrics_plot_{PATH_MODEL.name} {PATH_PREP_DATA.name}.png")
+
+    # same metric names/units as the e2e evaluation (measurements_test.yaml / metrics_RUN_x.yaml)
+    styled = to_e2e_style(collected, output_channels)
+    save_yaml(styled, PATH_DESTINATION / f"metrics_e2e-style_{PATH_MODEL.name} {PATH_PREP_DATA.name}.yaml")
+    for case, values in styled.items():
+        print(f"{case}: " + " | ".join(f"{k} {v:.4f}" for k, v in values.items()))
 
     # exemplary use on how to calculate mean, std, min and max for several runs of one set of hyperparameters
     # (needs a folder with metrics_run<id>.yaml files from repeated trainings - disabled by default)
