@@ -267,7 +267,7 @@ if __name__=="__main__":
     #   step 3 isolated:  runs/baseline_T + "... inputs_ixydk+s_outer outputs_t"                           (T on simulated v)
     #   full pipeline:    runs/baseline_T + "... inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45" (T on predicted v)
     PATH_PREP_DATA = Path("../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45") # TODO: change to your path
-    PATH_MODEL = Path("runs/baseline_v") # TODO: change to your path
+    PATH_MODEL = Path("runs/baseline_T") # TODO: change to your path
     PATH_DESTINATION = PATH_MODEL
     SCALING = False #or True, if it should be evaluated on the scaling test data
 
