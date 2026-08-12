@@ -87,6 +87,16 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
         print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
 
+    # GRADIENT DIAGNOSTIC: how much of CNN1's update comes through the differentiable streamlines
+    # vs. the direct velocity channels, evaluated on the *stage-2 starting* model (post stage 1 =
+    # "first epoch"). grad_diag_only stops here so the plot is available without the full run.
+    if args.get("grad_diag", False) and args["case"] in ["train", "finetune"]:
+        from processing.e2e_grad_diag import diagnose_e2e_gradients
+        x0, y0 = next(iter(dataloaders["train"]))
+        diagnose_e2e_gradients(model, x0, y0, args, plot_path=args["destination"] / "grad_diag_stage2_start.png")
+        if args.get("grad_diag_only", False):
+            return model
+
     # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
     if args["case"] in ["train", "finetune"]:
         # loss = MSE(T) + lambda_v * MSE(v); lambda_v=0 (or missing key) = pure temperature loss.

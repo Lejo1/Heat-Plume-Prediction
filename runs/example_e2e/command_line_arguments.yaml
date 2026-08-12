@@ -16,8 +16,10 @@ t_steps: 10000   # streamline samples; also caps the RK4 steps
 sigma: 1.0       # soft-drawing splat width in cells
 fade_mode: absolute  # streamline fading 1 - t/t_end (cut-invariant; "per_line" = legacy paper convention)
 clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
-lambda_v: 0.5    # weight of the auxiliary velocity loss: MSE(T) + lambda_v * MSE(v); 0/missing = pure T loss
+lambda_v: 0.0    # pure T loss in stage 2 (stage-1 pretraining supplies the physical velocities); >0 re-enables MSE(T) + lambda_v * MSE(v)
 compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure
+grad_diag: true       # after stage 1, decompose CNN1's gradient into streamline vs direct routes + save a plot
+grad_diag_only: true  # stop right after the diagnostic (get the plot without running all stage-2 epochs)
 order_data:
 - 0
 - 1
