@@ -31,17 +31,12 @@ from torch.nn import MSELoss
 from step2_streamlines.streamlines_helpers import trace_and_draw_soft
 
 
-def _param_grads(loss, params, retain, extra_inputs):
-    """autograd.grad of `loss` w.r.t. `params` (+ any `extra_inputs`), in one backward.
-    Returns (raw L2 norm over params, sanitized L2 norm, [grads for extra_inputs])."""
-    grads = torch.autograd.grad(loss, list(params) + list(extra_inputs),
-                                retain_graph=retain, allow_unused=True)
-    n_p = len(list(params))
-    pgrads, egrads = grads[:n_p], grads[n_p:]
+def _grad_norms(pgrads):
+    """Raw and non-finite-sanitized L2 norm over a list of parameter gradients."""
     raw = torch.sqrt(sum((g.double() ** 2).sum() for g in pgrads if g is not None))
     san = torch.sqrt(sum(torch.nan_to_num(g.double(), nan=0.0, posinf=0.0, neginf=0.0).pow(2).sum()
                          for g in pgrads if g is not None))
-    return float(raw), float(san), egrads
+    return float(raw), float(san)
 
 
 def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, plot_path: Path):
@@ -62,9 +57,15 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
     h, w = v.shape[2:]
     i0, j0 = (x.shape[2] - h) // 2, (x.shape[3] - w) // 2
     x_crop = x[:, :, i0:i0 + h, j0:j0 + w]
-    v_phys = v * M.v_delta + M.v_min
 
-    # streamlines (live graph, single batch element -- same call as the model's forward)
+    # A detached leaf `vd` (same values as v) feeds the streamline trace. This DECOUPLES the huge
+    # streamline autograd graph (RK4 over t_steps on the full domain) from unet_v's graph, so it
+    # can be freed right after the streamline backward -- before the second CNN2 graph is built and
+    # before backpropagating into unet_v's parameters. Holding the streamline graph and both CNN2
+    # graphs at once is what ran the 24 GB card out of memory.
+    vd = v.detach().requires_grad_(True)
+    v_phys = vd * M.v_delta + M.v_min
+
     hp_positions = torch.nonzero(x_crop[0, M.IDX_I] == 1.0).float() + 0.5
     occs = trace_and_draw_soft(hp_positions, v_phys[0, 0], v_phys[0, 1], (h, w),
                                offsets=M.offsets, randomK_data=M.randomK_data, faded=True,
@@ -84,15 +85,26 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
         T_label = y[:, 0:1, it:it + ht, jt:jt + wt]
         return mse(T_pred, T_label)
 
-    # route S: only the streamline channels carry gradient to v (direct channels detached)
-    L_stream = cnn2_loss(v.detach(), sf, sf_outer)
-    # route D: only the direct velocity channels carry gradient (streamlines detached)
-    L_direct = cnn2_loss(v, sf.detach(), sf_outer.detach())
+    # velocity-space gradients per route (w.r.t. the leaf vd), each on its own graph that is freed
+    # immediately after use so the peak stays at ~one training step's memory:
+    # route S -- gradient reaches v only through the streamlines (direct channels detached)
+    L_stream = cnn2_loss(vd.detach(), sf, sf_outer)
+    gv_s, gsf = torch.autograd.grad(L_stream, [vd, sf])   # this frees the streamline graph
+    del L_stream, occs, v_phys
+    if x.is_cuda:
+        torch.cuda.empty_cache()
+    # route D -- gradient reaches v only through the direct CNN2 channels (streamlines detached)
+    L_direct = cnn2_loss(vd, sf.detach(), sf_outer.detach())
+    (gv_d,) = torch.autograd.grad(L_direct, [vd])
+    del L_direct
 
+    # map each velocity-space gradient onto unet_v's parameters via one vector-Jacobian product
+    # (J_v^T g equals the real dL/dtheta for that route); the streamline graph is already gone.
     params = [p for p in M.unet_v.parameters() if p.requires_grad]
-    # one backward for S also yields the spatial grads dL/dv (through streamlines) and dL/dsf
-    raw_s, san_s, (gv_s, gsf) = _param_grads(L_stream, params, True, [v, sf])
-    raw_d, san_d, (gv_d,) = _param_grads(L_direct, params, False, [v])
+    pg_s = torch.autograd.grad(v, params, grad_outputs=gv_s, retain_graph=True, allow_unused=True)
+    pg_d = torch.autograd.grad(v, params, grad_outputs=gv_d, retain_graph=False, allow_unused=True)
+    raw_s, san_s = _grad_norms(pg_s)
+    raw_d, san_d = _grad_norms(pg_d)
 
     # ---- spatial magnitudes (sanitize non-finite for plotting/statistics) ----
     def mag(g):
@@ -141,6 +153,9 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
 
     if was_training:
         model.train()
+    del v, vd, gv_s, gv_d, gsf, sf, sf_outer, pg_s, pg_d
+    if x.is_cuda:
+        torch.cuda.empty_cache()
     return stats
 
 

@@ -86,6 +86,12 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
             solver_v.save_lr_schedule(args_stage1["destination"] / "learning_rate_history.csv")
         print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
         print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        # release stage-1 memory (Solver, its Adam moments, the cut dataset/loaders) before the
+        # memory-heavy full-domain diagnostic and stage-2 forward -- the best unet_v weights are
+        # already loaded back into the model by solver_v.train()
+        del solver_v, cuts_train, dataloaders_v, val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
 
     # GRADIENT DIAGNOSTIC: how much of CNN1's update comes through the differentiable streamlines
     # vs. the direct velocity channels, evaluated on the *stage-2 starting* model (post stage 1 =
