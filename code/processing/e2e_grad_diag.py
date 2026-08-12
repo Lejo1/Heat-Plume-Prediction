@@ -123,13 +123,19 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
     tot = m_stream.sum()
     mass_on_line = float(m_stream[on_line].sum() / tot) if tot > 0 else 0.0
 
+    # with detach_direct_v the direct route is blocked in training, so CNN1's actual T-update comes
+    # from the streamline route alone -- the two route magnitudes are still measured for reference.
+    detach = bool(getattr(M, "detach_direct_v", False))
     denom = san_s + san_d
+    potential_share = san_s / denom if denom > 0 else 0.0
     stats = {
+        "detach_direct_v": detach,
         "param_grad_norm_streamline_raw": raw_s,
         "param_grad_norm_streamline_sanitized": san_s,
         "param_grad_norm_direct_raw": raw_d,
         "param_grad_norm_direct_sanitized": san_d,
-        "streamline_share_of_sanitized_grad": (san_s / denom if denom > 0 else 0.0),
+        "streamline_potential_share": potential_share,       # san_s / (san_s + san_d)
+        "streamline_share_of_actual_cnn1_update": 1.0 if detach else potential_share,
         "streamline_grad_had_nonfinite": bool(not np.isfinite(raw_s)),
         "spatial_frac_cells_on_streamlines": frac_on,
         "spatial_mean_|dL/dv|_on_streamlines": mean_on,
@@ -138,14 +144,20 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
     }
 
     _plot(streamlines_np, m_stream, m_direct, m_gsf,
-          dict(streamline=san_s, direct=san_d), stats, plot_path)
+          dict(streamline=san_s, direct=san_d), stats, plot_path, detach)
 
     print("\n=== e2e gradient decomposition (unet_v parameter gradients, pure T loss) ===")
     print(f"  streamline route : raw {raw_s:.3e}  sanitized {san_s:.3e}"
           + ("   [contained inf/nan -> exploding, not vanishing]" if not np.isfinite(raw_s) else ""))
-    print(f"  direct route     : raw {raw_d:.3e}  sanitized {san_d:.3e}")
-    print(f"  streamline share of the (sanitized) CNN1 update: "
-          f"{stats['streamline_share_of_sanitized_grad'] * 100:.1f}%")
+    print(f"  direct route     : raw {raw_d:.3e}  sanitized {san_d:.3e}"
+          + ("   [BLOCKED in training: detach_direct_v=True]" if detach else ""))
+    if detach:
+        print(f"  detach_direct_v is ON -> CNN1's actual T-update is 100% streamline "
+              f"(direct route shown only for reference; potential share would be "
+              f"{stats['streamline_potential_share'] * 100:.1f}%)")
+    else:
+        print(f"  streamline share of the (sanitized) CNN1 update: "
+              f"{stats['streamline_potential_share'] * 100:.1f}%")
     print(f"  spatial: streamlines cover {frac_on * 100:.1f}% of cells but hold "
           f"{mass_on_line * 100:.1f}% of |dL/dv|_stream mass "
           f"(mean on-line {mean_on:.3e} vs off-line {mean_off:.3e})")
@@ -159,7 +171,7 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
     return stats
 
 
-def _plot(streamlines, m_stream, m_direct, m_gsf, norms, stats, plot_path):
+def _plot(streamlines, m_stream, m_direct, m_gsf, norms, stats, plot_path, detach=False):
     def logmap(a):
         a = np.asarray(a, dtype=float)
         pos = a[a > 0]
@@ -195,19 +207,26 @@ def _plot(streamlines, m_stream, m_direct, m_gsf, norms, stats, plot_path):
                                 f"{stats['spatial_mass_on_streamlines']*100:.1f}% of mass on lines",
                     transform=axes[1, 1].transAxes, va="top", fontsize=9)
 
-    # headline bar chart: which route actually moves CNN1's weights (sanitized norms)
+    # headline bar chart: per-route gradient magnitude reaching CNN1 (sanitized norms)
     labels = list(norms.keys())
     vals = [norms[k] for k in labels]
-    colors = {"streamline": "#c1440e", "direct": "#2a7fb8"}
-    axes[1, 2].bar(labels, vals, color=[colors[k] for k in labels])
-    axes[1, 2].set_title("||dL/dtheta_unet_v|| per route (sanitized)", fontsize=10)
+    # if the direct route is blocked in training, draw it hatched/faded to signal "measured but unused"
+    colors = {"streamline": "#c1440e", "direct": "#c9d3db" if detach else "#2a7fb8"}
+    bars = axes[1, 2].bar(labels, vals, color=[colors[k] for k in labels])
+    if detach:
+        bars[labels.index("direct")].set_hatch("//")
+    axes[1, 2].set_title("||dL/dtheta_unet_v|| per route (sanitized)"
+                         + ("  -- direct BLOCKED in training" if detach else ""), fontsize=10)
     axes[1, 2].set_ylabel("L2 norm")
     total = sum(vals) or 1.0
-    for i, val in enumerate(vals):
-        axes[1, 2].text(i, val, f"{val:.2e}\n{val/total*100:.0f}%", ha="center", va="bottom", fontsize=9)
+    for i, (lab, val) in enumerate(zip(labels, vals)):
+        pct = "0% (blocked)" if (detach and lab == "direct") else f"{val/total*100:.0f}%"
+        axes[1, 2].text(i, val, f"{val:.2e}\n{pct}", ha="center", va="bottom", fontsize=9)
 
-    fig.suptitle("Gradient reaching CNN1 through the differentiable streamline solver vs. the direct bypass",
-                 fontsize=13)
+    title = "Gradient reaching CNN1 through the differentiable streamline solver vs. the direct bypass"
+    if detach:
+        title += "\n(detach_direct_v ON: CNN1's actual T-update = streamline route only)"
+    fig.suptitle(title, fontsize=13)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.savefig(plot_path, dpi=120)
     plt.close(fig)

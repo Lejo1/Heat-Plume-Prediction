@@ -49,7 +49,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     model = LGCNNEndToEnd(v_stats=dataset_train.info_v["Labels"], unet_args=unet_args,
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
                           use_compile=args.get("compile", False),
-                          fade_mode=args.get("fade_mode", "absolute")).float()
+                          fade_mode=args.get("fade_mode", "absolute"),
+                          detach_direct_v=args.get("detach_direct_v", False)).float()
     model.to(args["device"])
 
     if args["case"] in ["test", "finetune"]:
@@ -63,33 +64,50 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         model.apply(weights_init)
 
     # STAGE 1: pretrain CNN1 (unet_v) alone on the velocity task with the partitioned dataset
-    # (~1000 patch-batches per epoch instead of 1 full-domain step; no streamlines/CNN2 -> cheap)
+    # (~1000 patch-batches per epoch instead of 1 full-domain step; no streamlines/CNN2 -> cheap).
+    # The trained weights are cached to unet_v_pretrained.pt and reused on later runs, so the
+    # ~35 min pretraining runs only once (delete the file or set stage1_force: true to retrain).
     if args["case"] == "train" and args.get("stage1_epochs", 0) > 0:
-        cuts_train = SimulationDatasetCuts(dataset_train.path_v, skip_per_dir=args["skip_per_dir"],
-                                           box_size=args["len_box"], ids=order[0])
+        stage1_dir = args["destination"] / "stage1_v"
+        stage1_dir.mkdir(parents=True, exist_ok=True)
+        stage1_ckpt = stage1_dir / "unet_v_pretrained.pt"
         val_v = DataPoint(dataset_train.path_v, i=order[1])
-        dataloaders_v = {"train": DataLoader(cuts_train, batch_size=args["batchsize"], shuffle=True, num_workers=0),
-                         "val": DataLoader(val_v, batch_size=1, shuffle=False, num_workers=0)}
-        args_stage1 = {**args, "epochs": args["stage1_epochs"], "destination": args["destination"] / "stage1_v"}
-        args_stage1["destination"].mkdir(parents=True, exist_ok=True)
 
-        solver_v = Solver(model.unet_v, dataloaders_v["train"], dataloaders_v["val"],
-                          loss_func=MSELoss(), finetune=True, learning_rate=args["lr"])
-        solver_v.lr_schedule = {0: args["lr"]}
-        print(f"STAGE 1: velocity pretraining, {len(dataloaders_v['train'])} patch-batches/epoch, {args['stage1_epochs']} epochs")
-        stage1_time = datetime.now()
-        try:
-            solver_v.train(args_stage1)
-        except KeyboardInterrupt:
-            logging.warning(f"Manually stopping stage 1 early with best model found in epoch {solver_v.best_model_params['epoch']}.")
-        finally:
-            solver_v.save_lr_schedule(args_stage1["destination"] / "learning_rate_history.csv")
-        print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
+        if stage1_ckpt.exists() and not args.get("stage1_force", False):
+            print(f"STAGE 1: loading cached pretrained unet_v from {stage1_ckpt} "
+                  f"(skipping the {args['stage1_epochs']}-epoch pretraining; "
+                  f"delete the file or set stage1_force: true to retrain)")
+            model.unet_v.load_state_dict(torch.load(stage1_ckpt, map_location=args["device"]))
+        else:
+            cuts_train = SimulationDatasetCuts(dataset_train.path_v, skip_per_dir=args["skip_per_dir"],
+                                               box_size=args["len_box"], ids=order[0])
+            dataloaders_v = {"train": DataLoader(cuts_train, batch_size=args["batchsize"], shuffle=True, num_workers=0),
+                             "val": DataLoader(val_v, batch_size=1, shuffle=False, num_workers=0)}
+            args_stage1 = {**args, "epochs": args["stage1_epochs"], "destination": stage1_dir}
+
+            solver_v = Solver(model.unet_v, dataloaders_v["train"], dataloaders_v["val"],
+                              loss_func=MSELoss(), finetune=True, learning_rate=args["lr"])
+            solver_v.lr_schedule = {0: args["lr"]}
+            print(f"STAGE 1: velocity pretraining, {len(dataloaders_v['train'])} patch-batches/epoch, {args['stage1_epochs']} epochs")
+            stage1_time = datetime.now()
+            try:
+                solver_v.train(args_stage1)
+            except KeyboardInterrupt:
+                logging.warning(f"Manually stopping stage 1 early with best model found in epoch {solver_v.best_model_params['epoch']}.")
+            finally:
+                solver_v.save_lr_schedule(stage1_dir / "learning_rate_history.csv")
+            print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
+            # solver_v.train() has already loaded the best unet_v weights back into the model
+            torch.save(model.unet_v.state_dict(), stage1_ckpt)
+            print(f"Saved stage-1 unet_v checkpoint to {stage1_ckpt}")
+            # release stage-1 memory (Solver, its Adam moments, the cut dataset/loaders) before the
+            # memory-heavy full-domain diagnostic and stage-2 forward
+            del solver_v, cuts_train, dataloaders_v
+            if "cuda" in str(args["device"]):
+                torch.cuda.empty_cache()
+
         print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
-        # release stage-1 memory (Solver, its Adam moments, the cut dataset/loaders) before the
-        # memory-heavy full-domain diagnostic and stage-2 forward -- the best unet_v weights are
-        # already loaded back into the model by solver_v.train()
-        del solver_v, cuts_train, dataloaders_v, val_v
+        del val_v
         if "cuda" in str(args["device"]):
             torch.cuda.empty_cache()
 

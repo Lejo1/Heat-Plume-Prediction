@@ -18,6 +18,8 @@ fade_mode: absolute  # streamline fading 1 - t/t_end (cut-invariant; "per_line" 
 clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
 lambda_v: 0.0    # pure T loss in stage 2 (stage-1 pretraining supplies the physical velocities); >0 re-enables MSE(T) + lambda_v * MSE(v)
 compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure
+detach_direct_v: true  # stop-gradient on CNN2's direct vx/vy channels -> CNN1's T-loss signal flows only through the streamlines
+stage1_force: false    # true = retrain stage 1 even if a cached unet_v_pretrained.pt exists
 grad_diag: true       # after stage 1, decompose CNN1's gradient into streamline vs direct routes + save a plot
 grad_diag_only: true  # stop right after the diagnostic (get the plot without running all stage-2 epochs)
 order_data:

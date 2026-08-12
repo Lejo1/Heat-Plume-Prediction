@@ -48,7 +48,8 @@ if __name__ == "__main__":
     model = LGCNNEndToEnd(v_stats=dataset.info_v["Labels"], unet_args=unet_args,
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
                           use_compile=args.get("compile", False),
-                          fade_mode=args.get("fade_mode", "absolute")).float()
+                          fade_mode=args.get("fade_mode", "absolute"),
+                          detach_direct_v=args.get("detach_direct_v", False)).float()
     model.load(args["destination"], args["device"])
     model.eval()
 
