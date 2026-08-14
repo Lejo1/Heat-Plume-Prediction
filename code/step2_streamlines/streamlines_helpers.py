@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from datetime import datetime
 from pathlib import Path
 
@@ -156,27 +157,77 @@ def draw_streamlines(image_data:torch.Tensor, streamlines:list, faded:bool=False
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
+SIGMA_BLUR_MIN = 1.0  # at/above this sigma "auto" drawing switches from the splat to the blur path
+
+def _scatter_bilinear(density, x, y, amp, dims):
+    # Deposit each sample's mass `amp` on the 4 cell centers surrounding it (centers sit at integer
+    # coordinates, the same convention the splat path's floor(x+0.5) indexing uses). Which 4 cells
+    # are hit is discrete -> detached; the bilinear weights carry the gradient w.r.t. position.
+    i0, j0 = x.floor(), y.floor()
+    fx = (x - i0.detach()).unsqueeze(1)
+    fy = (y - j0.detach()).unsqueeze(1)
+    i0 = i0.detach().long().unsqueeze(1)
+    j0 = j0.detach().long().unsqueeze(1)
+    ii = torch.cat([i0, i0+1, i0,   i0+1], dim=1)
+    jj = torch.cat([j0, j0,   j0+1, j0+1], dim=1)
+    w = torch.cat([(1-fx)*(1-fy), fx*(1-fy), (1-fx)*fy, fx*fy], dim=1) * amp.unsqueeze(1)
+    mask = (ii >= 0) & (ii < dims[0]) & (jj >= 0) & (jj < dims[1])
+    density.index_put_((ii[mask], jj[mask]), w[mask], accumulate=True)
+
+def _gaussian_blur_separable(img, sigma, radius):
+    # The same analytic Gaussian the splat path evaluates, applied as two 1D passes:
+    # exp(-(di^2+dj^2)/2s^2) / (2 pi s^2) factorizes into [exp(-di^2/2s^2) / (sqrt(2 pi) s)] per
+    # axis. The kernel is left un-renormalized so the truncation at +-radius drops the same tail
+    # mass the splat path's window drops. Zero padding discards what blurs out of the domain,
+    # matching the splat path's bounds mask. Cost: 2*(2*radius+1) taps over the grid.
+    r = torch.arange(-radius, radius+1, dtype=img.dtype, device=img.device)
+    k = torch.exp(-r**2 / (2*sigma**2)) / (np.sqrt(2*np.pi) * sigma)
+    out = img.unsqueeze(0).unsqueeze(0)
+    out = F.conv2d(out, k.view(1, 1, -1, 1), padding=(radius, 0))
+    out = F.conv2d(out, k.view(1, 1, 1, -1), padding=(0, radius))
+    return out[0, 0]
+
 def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None,
-                          fade_mode:str="absolute", t_end:float=27.5):
+                          fade_mode:str="absolute", t_end:float=27.5, method:str="auto"):
     # Differentiable version of draw_streamlines: instead of setting single cells (gradient zero
-    # almost everywhere), every sample spreads a normalized Gaussian over its window x window
-    # neighborhood. Samples are weighted by their arc length ds, so a cell's density is the
-    # faded line length crossing it (independent of the time-sampling density) and does not
-    # saturate where samples are dense. occupancy = 1 - exp(-density) keeps values in [0,1).
+    # almost everywhere), every sample spreads a normalized Gaussian of width sigma. Samples are
+    # weighted by their arc length ds, so a cell's density is the faded line length crossing it
+    # (independent of the time-sampling density) and does not saturate where samples are dense.
+    # occupancy = 1 - exp(-density) keeps values in [0,1).
     # fade_mode "absolute" (default): fade = 1 - t/t_end - independent of where a line is cut,
     # so patch/window training and full-domain inference see identical channel semantics.
     # "per_line" (legacy, baseline comparability): fade 1 -> 0 over each line's visible segment,
     # the paper convention used by the offline hard-drawn datasets.
+    #
+    # Two ways to rasterize the same field, selected by `method`:
+    #  "splat": evaluate the Gaussian at every cell of each sample's window x window neighborhood.
+    #      Exact, but allocates n_samples x window^2 = n_samples x (4 sigma + 1)^2 entries per line
+    #      and *keeps them in the autograd graph* -> memory grows quadratically in sigma and runs a
+    #      24 GB card out of memory around sigma >~ 4 on full-domain data.
+    #  "blur": a Gaussian splat is a point mass convolved with a Gaussian, so scatter each sample
+    #      bilinearly (4 cells) and convolve the accumulated density once, separably. Memory per
+    #      sample is constant in sigma and the convolution is one cheap pass over the grid; the
+    #      backward is again a convolution. Gradients w.r.t. sample position flow through the
+    #      bilinear weights and are then smoothed by the blur.
+    #  "auto" (default): "blur" from sigma >= SIGMA_BLUR_MIN, "splat" below, where the splat path is
+    #      cheap and its exact sub-cell kernel still matters relative to the blob size.
+    # Bilinear deposition is itself a convolution with a triangular kernel of variance 1/6 per axis,
+    # so the blur uses sqrt(sigma^2 - 1/6) to land on total width sigma - the two paths then agree
+    # to well under a percent across the switch (the correction is 0.008% at sigma=10).
     if window is None:
         window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
+    use_blur = method == "blur" or (method == "auto" and sigma >= SIGMA_BLUR_MIN)
+    if method not in ("auto", "blur", "splat"):
+        raise ValueError(f"unknown drawing method {method!r} (expected 'auto', 'blur' or 'splat')")
     device = streamlines[0][0].device if streamlines else "cpu"
     dtype = streamlines[0][0].dtype if streamlines else torch.float32
     density = torch.zeros(tuple(dims), dtype=dtype, device=device)
     half = window // 2
-    offs = torch.arange(-half, half+1, dtype=dtype, device=device)
-    off_i, off_j = torch.meshgrid(offs, offs, indexing='ij')
-    off_i = off_i.reshape(1,-1)
-    off_j = off_j.reshape(1,-1)
+    if not use_blur:
+        offs = torch.arange(-half, half+1, dtype=dtype, device=device)
+        off_i, off_j = torch.meshgrid(offs, offs, indexing='ij')
+        off_i = off_i.reshape(1,-1)
+        off_j = off_j.reshape(1,-1)
     for sol_x, sol_y, t in streamlines:
         if len(t) < 2:
             continue
@@ -189,6 +240,10 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
             fade = (1 - t/t_end).clamp(min=0)
         else:  # per_line
             fade = 1 - t/t[-1]
+        if use_blur:
+            # unit point masses now, Gaussian applied to the summed density below
+            _scatter_bilinear(density, sol_x, sol_y, fade*ds, dims)
+            continue
         # cells around each sample; which cell a blob lands in is discrete -> detached,
         # the smooth kernel below carries the gradient
         cells_i = (sol_x + 0.5).floor().detach().unsqueeze(1) + off_i
@@ -197,11 +252,13 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
         w = torch.exp(-d2/(2*sigma**2)) / (2*np.pi*sigma**2) * (fade*ds).unsqueeze(1)
         mask = (cells_i >= 0) & (cells_i < dims[0]) & (cells_j >= 0) & (cells_j < dims[1])
         density.index_put_((cells_i[mask].long(), cells_j[mask].long()), w[mask], accumulate=True)
+    if use_blur:
+        density = _gaussian_blur_separable(density, np.sqrt(max(sigma**2 - 1/6, 1e-6)), half)
     return 1 - torch.exp(-density)
 
 def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
                         faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False,
-                        fade_mode:str="absolute"):
+                        fade_mode:str="absolute", method:str="auto"):
     # Differentiable forward pass of step 2: trace streamlines for all offsets in one batch and
     # rasterize each offset group to a soft-occupancy image (one image per offset).
     # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
@@ -217,7 +274,8 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
 
     velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
     streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps, use_compile=use_compile)
-    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma, fade_mode=fade_mode)
+    return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma,
+                                  fade_mode=fade_mode, method=method)
             for i in range(len(offsets))]
 
 def make_streamlines_gradients(mat_ids, vx, vy, dims, offset:float=None, randomK_data:bool=False, faded:bool=True,

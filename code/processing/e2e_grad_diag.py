@@ -189,7 +189,7 @@ def _plot(streamlines, m_stream, m_direct, m_gsf, norms, stats, plot_path, detac
     fig.colorbar(im, ax=axes[0, 1], fraction=0.046, pad=0.04)
 
     im = axes[0, 2].imshow(logmap(m_direct), origin="lower", cmap="viridis", interpolation="nearest")
-    axes[0, 2].set_title("log10 |dL/dv| via DIRECT channels (route D)", fontsize=10)
+    axes[0, 2].set_title("log10 |dL/dv| via DIRECT channels (skip route)", fontsize=10)
     fig.colorbar(im, ax=axes[0, 2], fraction=0.046, pad=0.04)
 
     im = axes[1, 0].imshow(logmap(m_gsf), origin="lower", cmap="magma", interpolation="nearest")

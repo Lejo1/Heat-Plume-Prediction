@@ -36,7 +36,7 @@ DATASET_NAME = "dataset_giant_100hp_varyK"
 RANDOM_K = True
 
 T_STEPS = 1200   # caps the RK4 steps; backward through the loop is the expensive part
-SIGMA = 2.5      # splat width in cells, sized so lines/gradients are visible on the 2560^2 grid
+SIGMA = 10.0      # splat width in cells, sized so lines/gradients are visible on the 2560^2 grid
 ZOOM = 340       # zoom window size in cells
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -77,23 +77,55 @@ def gradcheck_streamlines():
     element-by-element against float64 central differences on a tiny problem.
     Needs float64 (the production pipeline is float32) and a slow, smooth velocity field so no
     line is cut at the domain boundary (cuts are discrete events - genuinely non-differentiable
-    points where a Jacobian comparison must not sit)."""
+    points where a Jacobian comparison must not sit).
+    Run for both rasterization paths: the exact splat (small sigma) and the scatter+separable-blur
+    path that takes over from sigma >= SIGMA_BLUR_MIN."""
     dims_gc = (16, 12)
     xx, yy = np.meshgrid(np.arange(dims_gc[0]), np.arange(dims_gc[1]), indexing="ij")
-    vx0 = torch.tensor(0.5 + 0.1*np.sin(yy/3.), dtype=torch.float64, requires_grad=True)
-    vy0 = torch.tensor(0.2*np.cos(xx/4.), dtype=torch.float64, requires_grad=True)
     starts = torch.tensor([[4.5, 3.5], [8.5, 6.5]], dtype=torch.float64)
 
-    def f(vx_in, vy_in):
+    def f(vx_in, vy_in, sigma, method):
         velocity = build_velocity_grid(vx_in, vy_in, dims_gc, dtype=torch.float64)
         lines = calc_streamlines(starts, velocity, (dims_gc[0]-1, dims_gc[1]-1), t_end=4.0, t_steps=48)
-        occ = draw_streamlines_soft(lines, dims_gc, faded=True, sigma=0.8, fade_mode="absolute", t_end=4.0)
+        occ = draw_streamlines_soft(lines, dims_gc, faded=True, sigma=sigma, fade_mode="absolute",
+                                    t_end=4.0, method=method)
         return occ.sum()
 
-    t0 = time.time()
-    assert torch.autograd.gradcheck(f, (vx0, vy0), eps=1e-6, atol=1e-4, rtol=1e-3)
-    n = 2 * dims_gc[0] * dims_gc[1]
-    print(f"autograd.gradcheck PASSED ({n} partial derivatives verified element-wise, {time.time()-t0:.1f}s)")
+    for sigma, method in [(0.8, "splat"), (2.5, "blur")]:
+        vx0 = torch.tensor(0.5 + 0.1*np.sin(yy/3.), dtype=torch.float64, requires_grad=True)
+        vy0 = torch.tensor(0.2*np.cos(xx/4.), dtype=torch.float64, requires_grad=True)
+        t0 = time.time()
+        assert torch.autograd.gradcheck(lambda a, b: f(a, b, sigma, method), (vx0, vy0),
+                                        eps=1e-6, atol=1e-4, rtol=1e-3)
+        n = 2 * dims_gc[0] * dims_gc[1]
+        print(f"autograd.gradcheck PASSED for method={method!r} (sigma={sigma}): "
+              f"{n} partial derivatives verified element-wise, {time.time()-t0:.1f}s")
+
+
+def compare_drawing_methods(sigma=10.0, dims=(256, 256), t_steps=2000):
+    """The blur path must reproduce the splat path it replaces. Same lines, both rasterizations:
+    compares the occupancy fields and the velocity gradients they produce."""
+    xx, yy = np.meshgrid(np.arange(dims[0]), np.arange(dims[1]), indexing="ij")
+    starts = torch.tensor([[20.5, 15.5], [40.5, 60.5], [90.5, 30.5], [150.5, 100.5]])
+    out = {}
+    for method in ("splat", "blur"):
+        vx0 = torch.tensor(2.0 + 0.5*np.sin(yy/30.), dtype=torch.float32, requires_grad=True)
+        vy0 = torch.tensor(3.0 + 0.8*np.cos(xx/40.), dtype=torch.float32, requires_grad=True)
+        velocity = build_velocity_grid(vx0, vy0, dims)
+        lines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_steps=t_steps)
+        occ = draw_streamlines_soft(lines, dims, faded=True, sigma=sigma, method=method)
+        occ.sum().backward()
+        out[method] = (occ.detach(), vx0.grad.clone(), vy0.grad.clone())
+
+    occ_s, gx_s, gy_s = out["splat"]
+    occ_b, gx_b, gy_b = out["blur"]
+    d_occ = float((occ_s - occ_b).abs().max() / occ_s.abs().max())
+    cos_x = float(torch.nn.functional.cosine_similarity(gx_s.flatten(), gx_b.flatten(), dim=0))
+    cos_y = float(torch.nn.functional.cosine_similarity(gy_s.flatten(), gy_b.flatten(), dim=0))
+    print(f"splat vs blur at sigma={sigma}: max occupancy diff {d_occ:.2%} of peak, "
+          f"gradient cosine similarity {cos_x:.6f} (vx) / {cos_y:.6f} (vy)")
+    assert d_occ < 0.02, f"occupancy fields disagree by {d_occ:.2%}"
+    assert min(cos_x, cos_y) > 0.999, f"gradient directions disagree: {min(cos_x, cos_y)}"
 
 
 def finite_difference_check(mat_ids, vx, vy, dims, grad, component, n_cells=3, eps=0.5):
@@ -183,6 +215,7 @@ def plot_all(vx, vy, occ, grad_vx, grad_vy, starts, out_path):
 
 if __name__ == "__main__":
     gradcheck_streamlines()
+    compare_drawing_methods()
 
     runid = (sys.argv[1] if len(sys.argv) > 1 else "RUN_1").replace(".pt", "") + ".pt"
     mat_ids, vx, vy, dims = load_real_data(runid)
