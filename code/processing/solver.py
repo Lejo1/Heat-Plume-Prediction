@@ -29,6 +29,7 @@ class Solver(object):
     best_model_params: dict = None
     metrics: dict = None
     clip_grad_norm: float = None  # cap on the global gradient L2 norm, e.g. 1.0 for end-to-end training (exploding gradients through the streamlines); None = off
+    pipeline_tap: object = None  # optional PipelineTap: every N steps, plot each stage's in/out + the loss gradients around it
 
     def __post_init__(self):
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
@@ -147,6 +148,10 @@ class Solver(object):
                         return loss
                     self.opt.step(closure)
 
+            # arm the pipeline diagnostic BEFORE the forward pass (it has to retain the stage
+            # tensors while the graph is built); it only observes, the step itself is unchanged
+            armed = self.pipeline_tap.arm(self.model, x) if (self.pipeline_tap is not None and self.model.training) else False
+
             y_pred = self.model(x)
             required_size = y_pred.shape[2:]
             start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
@@ -156,6 +161,11 @@ class Solver(object):
 
             if self.model.training:
                 loss.backward()
+                # plot while .grad still holds the gradients as produced (clipping rescales them)
+                if armed:
+                    self.pipeline_tap.plot(self.model, y_reduced, loss)
+                if self.pipeline_tap is not None:
+                    self.pipeline_tap.advance()
                 if self.clip_grad_norm is not None:
                     # zero out non-finite entries first: clip_grad_norm_ with an inf total norm
                     # would scale by 0 and turn inf entries into NaN (inf * 0), poisoning the weights

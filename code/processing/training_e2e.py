@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
+from processing.e2e_pipeline_plot import PipelineTap
 from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.model import weights_init
@@ -125,10 +126,22 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     if args["case"] in ["train", "finetune"]:
         # loss = MSE(T) + lambda_v * MSE(v); lambda_v=0 (or missing key) = pure temperature loss.
         # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
+        # optional per-step pipeline diagnostic: every N optimizer steps, save each stage's
+        # input/output and the loss gradients on both sides of it (pipeline_plot_every: 0 = off)
+        tap = PipelineTap(every=args.get("pipeline_plot_every", 0),
+                          destination=args["destination"],
+                          max_plots=args.get("pipeline_plot_max", 0),
+                          t_stats=dataset_train.info_T["Labels"]["Temperature [C]"])
+        if tap.enabled:
+            print(f"pipeline diagnostic: every {tap.every} optimizer steps"
+                  + (f", at most {tap.max_plots} plots" if tap.max_plots > 0 else "")
+                  + f" -> {tap.dir}")
+
         solver = Solver(model, dataloaders["train"], dataloaders["val"],
                         loss_func=E2ELoss(lambda_v=args.get("lambda_v", 0.0)),
                         finetune=True, learning_rate=args["lr"],
-                        clip_grad_norm=args.get("clip_grad", 1.0))
+                        clip_grad_norm=args.get("clip_grad", 1.0),
+                        pipeline_tap=tap if tap.enabled else None)
         # programmatic schedule instead of load_lr_schedule: the fallback default_lr_schedule.csv
         # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied
         solver.lr_schedule = {0: args["lr"], int(0.7 * args["epochs"]): args["lr"] / 10}

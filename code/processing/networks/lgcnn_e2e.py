@@ -47,17 +47,38 @@ class LGCNNEndToEnd(Model):
         self.fade_mode = fade_mode  # "absolute" (default) or "per_line" (legacy/paper convention)
         self.detach_direct_v = detach_direct_v  # stop-gradient on CNN2's direct v channels (see forward)
         self.last_intermediates = {}  # detached v/streamlines of the last forward, for plots
+        # set by PipelineTap for one step: keep the LIVE stage tensors and retain their .grad, so a
+        # single backward yields every stage's input/output *and* the loss gradient on both sides
+        # of it. Off by default - it pins a few full-size tensors plus their gradients.
+        self.capture_intermediates = False
+        self.tapped = {}
+
+    def _tap(self, name: str, t: torch.Tensor) -> torch.Tensor:
+        """Record a stage boundary while capturing. retain_grad() makes .grad available on this
+        non-leaf tensor after backward; values and the graph are unchanged."""
+        if self.capture_intermediates:
+            if t.requires_grad:
+                t.retain_grad()
+            self.tapped[name] = t
+        return t
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.capture_intermediates:
+            self.tapped = {}
+        self._tap("x", x)                        # CNN1 input
         v_norm = self.unet_v(x)  # [B, 2, h, w], normalized velocities
+        self._tap("v_norm", v_norm)              # CNN1 output = streamline + direct-channel input
 
         # center-crop the input channels to CNN1's (valid-conv reduced) output size
         h, w = v_norm.shape[2:]
         i0, j0 = (x.shape[2] - h) // 2, (x.shape[3] - w) // 2
         x_crop = x[:, :, i0:i0+h, j0:j0+w]
 
-        # streamlines per sample (physical velocities via differentiable reverse-Rescale)
-        v_phys = v_norm * self.v_delta + self.v_min
+        # streamlines per sample (physical velocities via differentiable reverse-Rescale).
+        # v_phys is the streamline branch alone: its gradient is the route (S) signal, while the
+        # direct route shows up only in x_T's velocity channels - so tapping both decomposes the
+        # two routes from a single backward pass.
+        v_phys = self._tap("v_phys", v_norm * self.v_delta + self.v_min)
         sf, sf_outer = [], []
         for b in range(x.shape[0]):
             # heat pump cells: raw Material ID == 2 <=> normalized i-channel == 1
@@ -68,18 +89,18 @@ class LGCNNEndToEnd(Model):
                                        use_compile=self.use_compile, fade_mode=self.fade_mode)
             sf.append(occs[0])
             sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
-        sf = torch.stack(sf).unsqueeze(1)          # [B, 1, h, w]
-        sf_outer = torch.stack(sf_outer).unsqueeze(1)
+        sf = self._tap("sf", torch.stack(sf).unsqueeze(1))          # [B, 1, h, w], streamline output
+        sf_outer = self._tap("sf_outer", torch.stack(sf_outer).unsqueeze(1))
 
         # CNN2 input in the T-dataset channel order: [i, vx, vy, sf, k, sf_outer].
         # detach_direct_v cuts the gradient from CNN2's direct velocity channels back to CNN1, so
         # CNN1's temperature-loss signal is forced entirely through the differentiable streamlines
         # (CNN2's forward still sees v). v_norm stays live for the streamline trace and the output.
         v_direct = v_norm.detach() if self.detach_direct_v else v_norm
-        x_T = torch.cat([x_crop[:, self.IDX_I:self.IDX_I+1], v_direct, sf,
-                         x_crop[:, self.IDX_K:self.IDX_K+1], sf_outer], dim=1)
+        x_T = self._tap("x_T", torch.cat([x_crop[:, self.IDX_I:self.IDX_I+1], v_direct, sf,
+                                          x_crop[:, self.IDX_K:self.IDX_K+1], sf_outer], dim=1))
         self.last_intermediates = {"v_norm": v_norm.detach(), "sf": sf.detach(), "sf_outer": sf_outer.detach()}
-        T_pred = self.unet_T(x_T)
+        T_pred = self._tap("T_pred", self.unet_T(x_T))  # CNN2 output
 
         # append v center-cropped to T's size, so the auxiliary velocity loss can supervise CNN1
         ht, wt = T_pred.shape[2:]
