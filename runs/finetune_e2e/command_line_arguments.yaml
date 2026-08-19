@@ -1,0 +1,60 @@
+pipeline: e2e
+case: finetune   # load pretrained weights and keep them (no re-initialization)
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+
+# --- where the two baselines come from -------------------------------------------------------
+# Instead of one end-to-end checkpoint (model:), CNN1 and CNN2 are seeded from the two separately
+# trained baseline runs. Paths are relative to the code/ directory and follow the same convention
+# as those runs' own destination (../runs/<name>); if your checkpoints are the archived copies in
+# Bachelorarbeit/runs, use ../../runs/<name> instead. A missing model.pt fails immediately with
+# the full path, so this is a one-line fix rather than a silent fallback.
+model: null
+model_v: ../runs/baseline_v   # step 1: pki -> vx, vy    (kernel_size 5, MSE)
+model_T: ../runs/baseline_T   # step 3: ixydk+s_outer -> T (kernel_size 4, MAE)
+
+# baseline_v was tuned with kernel_size 5, baseline_T with kernel_size 4, so CNN2 cannot share
+# CNN1's architecture. HPS_options.yaml holds CNN1's; this overrides only what differs for CNN2.
+unet_args_T:
+  kernel_size: 4
+
+epochs: 200        # joint end-to-end finetuning (1 optimizer step per epoch and datapoint)
+stage1_epochs: 0   # no velocity pretraining: baseline_v already IS the pretrained CNN1
+inputs: pki
+outputs: t
+notes: end-to-end finetuning of the two-stage baselines (CNN1 = baseline_v, CNN2 = baseline_T) joined by the differentiable streamlines
+visualize: true
+randomK: true      # True for varyK datasets (flow main-direction switched)
+
+# --- streamline channel: must resemble what baseline_T was trained on ------------------------
+# baseline_T learned from "dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t", whose
+# streamline channels are HARD-drawn by LGCNN_step2.py: one cell wide, per-line fading, values in
+# [0, 1]. Measured on Inputs/RUN_1.pt: sf covers 1.42% of cells, mean 0.52 on those cells, max 1.0
+# (sf_outer 2.74%, mean 0.52, max 1.57 where two offset lines overlap).
+# The differentiable soft drawing spreads that over ~4*sigma+1 cells and saturates through
+# 1 - exp(-density), so the on-line value is ~1 - exp(-fade/(sqrt(2*pi)*sigma)) instead of fade.
+# sigma=1.0 keeps the plume ~5 cells wide at ~1/3 the amplitude - the closest usable compromise.
+# NOT the 10.0 of the from-scratch experiments: that is a channel CNN2 has never seen.
+t_steps: 10000     # streamline samples; also caps the RK4 steps
+sigma: 1.0         # soft-drawing splat width in cells
+fade_mode: per_line  # the offline step-2 datasets use the paper's per-line fading
+
+# --- optimization ----------------------------------------------------------------------------
+clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
+lambda_v: 0.05     # small MSE(v) term anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+detach_direct_v: false  # keep CNN2's direct vx/vy channels live - that is how baseline_T was trained; true only to force all signal through the streamlines
+compile: true      # torch.compile the RK4 step; falls back to eager on failure
+stage1_force: false
+
+# --- diagnostics -----------------------------------------------------------------------------
+grad_diag: true        # decompose CNN1's gradient into streamline vs direct routes + save a plot
+grad_diag_only: false  # false = actually run the finetuning
+pipeline_plot_every: 25  # every N optimizer steps: each stage's in/out + the loss gradients around it
+pipeline_plot_max: 40    # cap on the number of such plots (0 = unlimited)
+
+order_data:
+- 0
+- 1
+- 2

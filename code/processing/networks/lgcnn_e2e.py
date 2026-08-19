@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import torch
 
 from processing.networks.model import Model
@@ -24,11 +26,15 @@ class LGCNNEndToEnd(Model):
 
     def __init__(self, v_stats: dict, unet_args: dict, randomK_data: bool = False,
                  t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False,
-                 fade_mode: str = "absolute", detach_direct_v: bool = False):
-        """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy)."""
+                 fade_mode: str = "absolute", detach_direct_v: bool = False, unet_args_T: dict = None):
+        """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy).
+
+        unet_args_T defaults to unet_args; pass it when CNN2 must differ architecturally from CNN1,
+        as when finetuning from two separately tuned baselines (the step-1 and step-3 baselines of
+        this repo were trained with kernel_size 5 and 4 respectively)."""
         super().__init__()
         self.unet_v = UNetNoPad2(in_channels=3, out_channels=2, **unet_args)
-        self.unet_T = UNetNoPad2(in_channels=6, out_channels=1, **unet_args)
+        self.unet_T = UNetNoPad2(in_channels=6, out_channels=1, **(unet_args_T or unet_args))
 
         vx_stats = v_stats["Liquid X-Velocity [m_per_y]"]
         vy_stats = v_stats["Liquid Y-Velocity [m_per_y]"]
@@ -52,6 +58,36 @@ class LGCNNEndToEnd(Model):
         # of it. Off by default - it pins a few full-size tensors plus their gradients.
         self.capture_intermediates = False
         self.tapped = {}
+
+    def load_baselines(self, path_v, path_T, device: str = "cpu", model_name: str = "model.pt"):
+        """Initialize CNN1 and CNN2 from the two separately trained baseline runs (step 1: pki->v,
+        step 3: ixydk+s_outer->T) instead of from one end-to-end checkpoint.
+
+        The two baselines were tuned independently, so their architectures need not agree with each
+        other or with this run's HPS_options.yaml. A mismatch would otherwise surface as an opaque
+        state_dict error, so every disagreement is reported with the parameter shapes involved."""
+        location = "cuda:0" if "cuda" in str(device) else "cpu"
+        for label, path, net in (("CNN1 (unet_v)", path_v, self.unet_v),
+                                 ("CNN2 (unet_T)", path_T, self.unet_T)):
+            ckpt = Path(path) / model_name
+            assert ckpt.exists(), f"{label}: checkpoint {ckpt} not found"
+            sd = torch.load(ckpt, map_location=location)
+            sd = sd.state_dict() if hasattr(sd, "state_dict") else sd
+            here = net.state_dict()
+            bad = [(k, tuple(v.shape), tuple(here[k].shape)) for k, v in sd.items()
+                   if k in here and v.shape != here[k].shape]
+            missing = [k for k in here if k not in sd] + [k for k in sd if k not in here]
+            if bad or missing:
+                detail = "".join(f"\n    {k}: checkpoint {a} vs model {b}" for k, a, b in bad[:8])
+                if missing:
+                    detail += f"\n    {len(missing)} key(s) present in only one of the two, e.g. {missing[:3]}"
+                raise RuntimeError(
+                    f"{label}: {ckpt} does not fit this run's architecture.{detail}\n"
+                    f"  The first conv's kernel shape reveals the trained kernel_size; set it in "
+                    f"HPS_options.yaml (CNN1) or via unet_args_T in command_line_arguments.yaml (CNN2).")
+            net.load_state_dict(sd)
+            print(f"  loaded {label} from {ckpt} ({sum(p.numel() for p in net.parameters()):,} params)")
+        self.to(device)
 
     def _tap(self, name: str, t: torch.Tensor) -> torch.Tensor:
         """Record a stage boundary while capturing. retain_grad() makes .grad available on this

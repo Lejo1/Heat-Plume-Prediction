@@ -47,7 +47,13 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     unet_args = dict(depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"],
                      stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
                      norm=args["norm"], repeat_inner=args["repeat_inner"])
+    # CNN2 may need a different architecture than CNN1 - the two baselines were tuned separately.
+    # unet_args_T in command_line_arguments.yaml overrides individual keys, e.g. {kernel_size: 4}.
+    unet_args_T = {**unet_args, **(args.get("unet_args_T") or {})}
+    if unet_args_T != unet_args:
+        print(f"CNN2 architecture overrides: {args['unet_args_T']}")
     model = LGCNNEndToEnd(v_stats=dataset_train.info_v["Labels"], unet_args=unet_args,
+                          unet_args_T=unet_args_T,
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
                           use_compile=args.get("compile", False),
                           fade_mode=args.get("fade_mode", "absolute"),
@@ -55,7 +61,14 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     model.to(args["device"])
 
     if args["case"] in ["test", "finetune"]:
-        model.load(args["model"], args["device"])
+        # two sources of weights: either one end-to-end checkpoint (model:) or the two separately
+        # trained baselines (model_v: + model_T:), which is how a two-stage run is continued e2e
+        if args.get("model_v") and args.get("model_T"):
+            print(f"Loading the two baselines for end-to-end {args['case']}:")
+            model.load_baselines(args["model_v"], args["model_T"], args["device"])
+        else:
+            assert args.get("model"), "case 'finetune'/'test' needs either model: or model_v: + model_T:"
+            model.load(args["model"], args["device"])
     if args["case"] == "test":
         model.eval()
 
@@ -107,6 +120,16 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
             if "cuda" in str(args["device"]):
                 torch.cuda.empty_cache()
 
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    elif args["case"] == "finetune":
+        # sanity gate on the loaded CNN1: a wrong checkpoint or mismatched normalization stats show
+        # up here as a wildly off MAE, before any streamline or CNN2 issue can confuse the picture
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        print("Loaded CNN1 check (paper step-1 reference: 22.3 / 32.7 m/y):")
         print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
         del val_v
         if "cuda" in str(args["device"]):

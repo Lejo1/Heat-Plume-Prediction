@@ -6,7 +6,7 @@ import numpy as np
 
 def read_cla(path:str):
     clas = load_yaml(path / "command_line_arguments.yaml")
-    for path_typed_cla in ["data_prep", "data_raw", "model", "destination"]:
+    for path_typed_cla in ["data_prep", "data_raw", "model", "model_v", "model_T", "destination"]:
         try:
             if clas[path_typed_cla] is not None:
                 clas[path_typed_cla] = Path(clas[path_typed_cla])

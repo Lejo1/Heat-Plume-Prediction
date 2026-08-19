@@ -1,0 +1,54 @@
+# CNN1's architecture, taken from baseline_v so its checkpoint loads as-is.
+# CNN2 differs only in kernel_size (4), overridden by unet_args_T in command_line_arguments.yaml.
+# Everything else was identical across the two baselines.
+batchsize:
+  values:
+  - 20
+kernel_size:
+  values:
+  - 5
+depth:
+  values:
+  - 4
+init_features:
+  values:
+  - 32
+stride:
+  values:
+  - 1
+dilation:
+  values:
+  - 1
+activation_fct:
+  values:
+  - ReLU
+norm:
+  values:
+  - batchnorm
+repeat_inner:
+  values:
+  - False
+skip_per_dir:
+  values:
+  - 16
+len_box:
+  values:
+  - 256
+inputs:
+  values:
+    - pki
+train_loss:
+  values:
+  - MSE
+bool_cutouts:
+  values:
+  - True
+optimizer_switch:
+  values:
+  - False
+lr:
+  values:
+  # 1e-5 rather than the baselines' 1e-4: both nets start from a converged solution, and the
+  # full-domain e2e step is a batch of 1, so the baseline lr would undo the pretraining in a
+  # few steps.
+  - 0.00001

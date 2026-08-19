@@ -1,16 +1,31 @@
+activation_fct: ReLU
+batchsize: 20
+bool_cutouts: true
 case: train
-data_prep:
+data_prep: ../../datasets_prep/dataset_giant_100hp_varyK inputs_pki outputs_xy
 data_raw: ../datasets/dataset_giant_100hp_varyK
-destination:
+depth: 4
+destination: ../runs/baseline_v
 device: cuda
+dilation: 1
 epochs: 50
+init_features: 32
 inputs: pki
+kernel_size: 5
+len_box: 256
+lr: 0.0001
 model: null
-notes: baseline step 1 (predict v), synthetic-permeability (varyK) dataset, DaRUS doi:10.18419/DARUS-4156
-outputs: xy
-visualize: false
+norm: batchnorm
+notes: baseline step 1 (predict v), synthetic-permeability (varyK) dataset, DaRUS
+  doi:10.18419/DARUS-4156
+optimizer_switch: false
 order_data:
 - 0
 - 1
 - 2
-fade_mode: per_line  # documentation: the offline step-2 datasets (hard drawing) use the paper's per-line fading
+outputs: xy
+repeat_inner: false
+skip_per_dir: 16
+stride: 1
+train_loss: MSE
+visualize: false
