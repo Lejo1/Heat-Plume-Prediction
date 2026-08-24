@@ -57,7 +57,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
                           use_compile=args.get("compile", False),
                           fade_mode=args.get("fade_mode", "absolute"),
-                          detach_direct_v=args.get("detach_direct_v", False)).float()
+                          detach_direct_v=args.get("detach_direct_v", False),
+                          v_blur=args.get("v_blur", 0.0) or 0.0).float()
     model.to(args["device"])
 
     if args["case"] in ["test", "finetune"]:
@@ -164,7 +165,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                         loss_func=E2ELoss(lambda_v=args.get("lambda_v", 0.0)),
                         finetune=True, learning_rate=args["lr"],
                         clip_grad_norm=args.get("clip_grad", 1.0),
-                        pipeline_tap=tap if tap.enabled else None)
+                        pipeline_tap=tap if tap.enabled else None,
+                        epoch_callback=make_v_blur_schedule(model, args))
         # programmatic schedule instead of load_lr_schedule: the fallback default_lr_schedule.csv
         # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied
         solver.lr_schedule = {0: args["lr"], int(0.7 * args["epochs"]): args["lr"] / 10}
@@ -191,6 +193,31 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
         visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
     return model
+
+
+def make_v_blur_schedule(model, args):
+    """Annealing of the tracer's velocity smoothing: fn(epoch) -> None, or None if not needed.
+
+    v_blur widens the support of dL/dv but also changes the forward model (trajectories follow the
+    coarse-grained flow). Annealing it to v_blur_end resolves that: the run starts with a broad,
+    well-conditioned gradient and finishes tracing the field it will be evaluated on - a
+    continuation scheme, not a permanent approximation.
+    """
+    start = float(args.get("v_blur", 0.0) or 0.0)
+    end = args.get("v_blur_end")
+    if start <= 0 and end in (None, 0, 0.0):
+        return None
+    end = start if end is None else float(end)
+    n = int(args.get("v_blur_anneal_epochs") or args["epochs"])
+    if end == start:
+        print(f"tracer velocity smoothing: v_blur = {start} (constant)")
+        return None  # model.v_blur is already set from the config; no per-epoch work to do
+    print(f"tracer velocity smoothing: v_blur {start} -> {end} linearly over {n} epochs")
+
+    def set_v_blur(epoch):
+        frac = min(epoch / max(n - 1, 1), 1.0)
+        model.v_blur = start + (end - start) * frac
+    return set_v_blur
 
 
 def print_velocity_mae(unet_v, dataset_val, info_v, device):

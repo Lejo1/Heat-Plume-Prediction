@@ -4,7 +4,7 @@ import torch
 
 from processing.networks.model import Model
 from processing.networks.unetVariants import UNetNoPad2
-from step2_streamlines.streamlines_helpers import trace_and_draw_soft
+from step2_streamlines.streamlines_helpers import smooth_velocity_field, trace_and_draw_soft
 
 
 class LGCNNEndToEnd(Model):
@@ -26,7 +26,8 @@ class LGCNNEndToEnd(Model):
 
     def __init__(self, v_stats: dict, unet_args: dict, randomK_data: bool = False,
                  t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False,
-                 fade_mode: str = "absolute", detach_direct_v: bool = False, unet_args_T: dict = None):
+                 fade_mode: str = "absolute", detach_direct_v: bool = False, unet_args_T: dict = None,
+                 v_blur: float = 0.0):
         """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy).
 
         unet_args_T defaults to unet_args; pass it when CNN2 must differ architecturally from CNN1,
@@ -51,6 +52,12 @@ class LGCNNEndToEnd(Model):
         self.offsets = tuple(offsets)
         self.use_compile = use_compile
         self.fade_mode = fade_mode  # "absolute" (default) or "per_line" (legacy/paper convention)
+        # Gaussian smoothing of the velocity field seen by the TRACER only (0 = off). Widens the
+        # support of dL/dv from the one-cell thread along each streamline to a band of ~2*v_blur
+        # cells; see smooth_velocity_field. Plain attribute, not a buffer, so an annealing schedule
+        # can rewrite it per epoch - which means it is NOT stored in the checkpoint and must be set
+        # from the config again at inference time.
+        self.v_blur = float(v_blur)
         self.detach_direct_v = detach_direct_v  # stop-gradient on CNN2's direct v channels (see forward)
         self.last_intermediates = {}  # detached v/streamlines of the last forward, for plots
         # set by PipelineTap for one step: keep the LIVE stage tensors and retain their .grad, so a
@@ -115,11 +122,14 @@ class LGCNNEndToEnd(Model):
         # direct route shows up only in x_T's velocity channels - so tapping both decomposes the
         # two routes from a single backward pass.
         v_phys = self._tap("v_phys", v_norm * self.v_delta + self.v_min)
+        # only the tracer sees the coarse-grained field; CNN2's direct v channels keep the sharp
+        # prediction, and so does the model's own v output
+        v_trace = smooth_velocity_field(v_phys, self.v_blur) if self.v_blur > 0 else v_phys
         sf, sf_outer = [], []
         for b in range(x.shape[0]):
             # heat pump cells: raw Material ID == 2 <=> normalized i-channel == 1
             hp_positions = torch.nonzero(x_crop[b, self.IDX_I] == 1.0).float() + 0.5  # cell-center offset
-            occs = trace_and_draw_soft(hp_positions, v_phys[b, 0], v_phys[b, 1], (h, w),
+            occs = trace_and_draw_soft(hp_positions, v_trace[b, 0], v_trace[b, 1], (h, w),
                                        offsets=self.offsets, randomK_data=self.randomK_data,
                                        faded=True, t_steps=self.t_steps, sigma=self.sigma,
                                        use_compile=self.use_compile, fade_mode=self.fade_mode)

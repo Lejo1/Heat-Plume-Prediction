@@ -187,6 +187,37 @@ def _gaussian_blur_separable(img, sigma, radius):
     out = F.conv2d(out, k.view(1, 1, 1, -1), padding=(0, radius))
     return out[0, 0]
 
+def smooth_velocity_field(v, sigma: float):
+    """Coarse-grain a velocity field before tracing. Input/output [..., H, W] (any leading dims).
+
+    Why this exists: the tracer reads the velocity grid ONLY through bilinear interpolation at the
+    trajectory points (sample_velocity), so dL/dv is supported on the ~4 cells around each RK4
+    evaluation - a one-cell-wide thread along the streamline. The drawing width sigma cannot change
+    that: it controls where the drawn mass lands (d sf / d position), not which velocity cells the
+    trajectory reads (d position / dv). Measured support is identical for sigma 0.7 ... 20.
+
+    Pre-smoothing inserts a linear operator in front of that sampling. Its transpose spreads each
+    thread's gradient over the whole kernel, so every cell within ~2*sigma of the path receives
+    signal (measured: 6.5% -> 29% of cells at sigma 4, -> 50% at sigma 8). The forward meaning is
+    coarse-grained advection: trajectories follow the smoothed flow. Anneal sigma -> 0 during
+    training to end up tracing the true field again.
+
+    Unlike the drawing kernel this one is normalized and replicate-padded: it is a weighted average,
+    so a constant field must come back unchanged, including at the domain border (zero padding would
+    drag boundary velocities toward 0 and bend every line that runs near the edge).
+    """
+    if sigma <= 0:
+        return v
+    radius = max(int(np.ceil(2 * sigma)), 1)
+    r = torch.arange(-radius, radius + 1, dtype=v.dtype, device=v.device)
+    k = torch.exp(-r ** 2 / (2 * sigma ** 2))
+    k = k / k.sum()
+    shape = v.shape
+    x = v.reshape(-1, 1, shape[-2], shape[-1])
+    x = F.conv2d(F.pad(x, (0, 0, radius, radius), mode="replicate"), k.view(1, 1, -1, 1))
+    x = F.conv2d(F.pad(x, (radius, radius, 0, 0), mode="replicate"), k.view(1, 1, 1, -1))
+    return x.reshape(shape)
+
 def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, window:int=None,
                           fade_mode:str="absolute", t_end:float=27.5, method:str="auto"):
     # Differentiable version of draw_streamlines: instead of setting single cells (gradient zero

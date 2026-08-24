@@ -30,6 +30,7 @@ class Solver(object):
     metrics: dict = None
     clip_grad_norm: float = None  # cap on the global gradient L2 norm, e.g. 1.0 for end-to-end training (exploding gradients through the streamlines); None = off
     pipeline_tap: object = None  # optional PipelineTap: every N steps, plot each stage's in/out + the loss gradients around it
+    epoch_callback: object = None  # optional fn(epoch) run at the start of each epoch, e.g. the v_blur annealing schedule
 
     def __post_init__(self):
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
@@ -64,6 +65,11 @@ class Solver(object):
                 # Set lr according to schedule
                 if epoch in self.lr_schedule.keys():
                     self.opt.param_groups[0]["lr"] = self.lr_schedule[epoch]
+
+                # schedules that are not the lr (v_blur annealing); runs before train and val, so
+                # both halves of the epoch see the same forward model
+                if self.epoch_callback is not None:
+                    self.epoch_callback(epoch)
                     
                 # Training
                 self.model.train()

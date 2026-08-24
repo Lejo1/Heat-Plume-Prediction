@@ -28,7 +28,7 @@ import numpy as np
 import torch
 from torch.nn import MSELoss
 
-from step2_streamlines.streamlines_helpers import trace_and_draw_soft
+from step2_streamlines.streamlines_helpers import smooth_velocity_field, trace_and_draw_soft
 
 
 def _grad_norms(pgrads):
@@ -66,8 +66,12 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
     vd = v.detach().requires_grad_(True)
     v_phys = vd * M.v_delta + M.v_min
 
+    # same coarse-graining as the training forward, or the measured support of route (S) would not
+    # be the one training actually sees
+    v_trace = smooth_velocity_field(v_phys, getattr(M, "v_blur", 0.0))
+
     hp_positions = torch.nonzero(x_crop[0, M.IDX_I] == 1.0).float() + 0.5
-    occs = trace_and_draw_soft(hp_positions, v_phys[0, 0], v_phys[0, 1], (h, w),
+    occs = trace_and_draw_soft(hp_positions, v_trace[0, 0], v_trace[0, 1], (h, w),
                                offsets=M.offsets, randomK_data=M.randomK_data, faded=True,
                                t_steps=M.t_steps, sigma=M.sigma, use_compile=M.use_compile,
                                fade_mode=M.fade_mode)
