@@ -136,6 +136,26 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         if "cuda" in str(args["device"]):
             torch.cuda.empty_cache()
 
+    # STARTING-POINT PLOTS: the same panels as the end-of-run val_e2e/test_e2e plots, rendered on
+    # the model as it enters stage 2. For a finetune that is the pristine two-stage baseline
+    # pipeline (baseline_v + hard-drawing-trained baseline_T now fed soft streamlines), so the
+    # _start/final pair isolates exactly what the joint training changed - and shows up front how
+    # much of any difference is CNN2 reacting to the new streamline channel rather than to training.
+    # Placed before the gradient diagnostic so grad_diag_only still produces it.
+    if args.get("visualize", False) and args["case"] in ["train", "finetune"]:
+        print("Rendering the stage-2 starting point (compare against val_e2e.png / test_e2e.png):")
+        visualize_e2e(model, dataloaders["val"], args, plot_path=args["destination"] / "val_e2e_start.png")
+        if "test" in dataloaders:
+            # same metrics as the end-of-run measurements_test.yaml, so the two files subtract
+            metrics_start = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"],
+                                         info_v=dataset_train.info_v)
+            save_yaml(metrics_start, args["destination"] / "measurements_test_start.yaml")
+            print("Test-set metrics BEFORE stage 2:",
+                  *[f"  {k}: {v:.4f}" for k, v in metrics_start.items()], sep="\n")
+            visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e_start.png")
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
     # GRADIENT DIAGNOSTIC: how much of CNN1's update comes through the differentiable streamlines
     # vs. the direct velocity channels, evaluated on the *stage-2 starting* model (post stage 1 =
     # "first epoch"). grad_diag_only stops here so the plot is available without the full run.
