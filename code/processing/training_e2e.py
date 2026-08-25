@@ -136,6 +136,27 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         if "cuda" in str(args["device"]):
             torch.cuda.empty_cache()
 
+    # BATCHNORM RE-ESTIMATION: CNN1 reaches this point trained on 256^2 patches (batch 20) - by
+    # stage-1 pretraining in the "train" case, by baseline_v in the "finetune" case - but from here
+    # on the model only ever sees one full-domain sample at a time. Recompute the buffers on
+    # full-domain inputs before anything is measured, so the starting-point plots/metrics and the
+    # gradient diagnostic describe the model stage 2 actually starts from. Weights are untouched.
+    # (In the "train" case CNN2 is still randomly initialized, so only CNN1 gains anything here;
+    # CNN2's buffers are overwritten by stage 2 either way.)
+    if args.get("bn_reestimate", False) and args["case"] in ["train", "finetune"]:
+        print("Re-estimating BatchNorm statistics on full-domain inputs (weights unchanged):")
+        n_bn, n_passes = reestimate_bn_stats(model, dataloaders["train"], args["device"],
+                                             repeats=args.get("bn_reestimate_repeats", 1))
+        print(f"  {n_bn} BatchNorm layers updated from {n_passes} full-domain forward pass(es)")
+        # same velocity check as above, now on the re-estimated buffers: the two prints bracket the
+        # effect of the recalibration on CNN1 (paper step-1 reference: 22.3 / 32.7 m/y)
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        print("CNN1 after re-estimation:")
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
     # STARTING-POINT PLOTS: the same panels as the end-of-run val_e2e/test_e2e plots, rendered on
     # the model as it enters stage 2. For a finetune that is the pristine two-stage baseline
     # pipeline (baseline_v + hard-drawing-trained baseline_T now fed soft streamlines), so the
@@ -213,6 +234,45 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
         visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
     return model
+
+
+def reestimate_bn_stats(model, dataloader, device, repeats: int = 1):
+    """Recompute every BatchNorm's running_mean/running_var from full-domain inputs.
+
+    The nets are fully convolutional, so patch-trained weights apply to the full domain unchanged -
+    but the BatchNorm buffers do not: they were accumulated over batches of twenty 256^2 patches,
+    while inference sees a single 2560^2 sample. That mismatch is not cosmetic. Swapping these
+    buffers alone accounted for ~92% of the velocity-field tilt difference across a whole finetune
+    run (baseline -9.16 deg, finetuned -4.49 deg, finetuned weights + baseline buffers -8.76 deg,
+    simulated truth -2.84 deg), because the streamline tracer integrates a small coherent velocity
+    offset along each trajectory while an MSE barely registers it.
+
+    momentum=None makes each layer accumulate an exact cumulative average over the passes below
+    rather than an exponential one, so the result does not depend on pass order and one pass over a
+    single datapoint yields exactly that datapoint's statistics. Runs under no_grad in train mode:
+    only the buffers change, no weights and no optimizer state.
+
+    Returns (number of BatchNorm layers, number of forward passes).
+    """
+    bns = [m for m in model.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+    if not bns:
+        return 0, 0
+    saved_momentum = [m.momentum for m in bns]
+    for m in bns:
+        m.reset_running_stats()
+        m.momentum = None
+    was_training = model.training
+    model.train()
+    n_passes = 0
+    with torch.no_grad():
+        for _ in range(max(int(repeats), 1)):
+            for x, _ in dataloader:
+                model(x.to(device))
+                n_passes += 1
+    for m, mom in zip(bns, saved_momentum):
+        m.momentum = mom
+    model.train(was_training)
+    return len(bns), n_passes
 
 
 def make_v_blur_schedule(model, args):

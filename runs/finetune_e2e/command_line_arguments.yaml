@@ -47,6 +47,7 @@ lambda_v: 0.05     # small MSE(v) term anchors CNN1 near baseline_v instead of l
 detach_direct_v: false  # keep CNN2's direct vx/vy channels live - that is how baseline_T was trained; true only to force all signal through the streamlines
 compile: true      # torch.compile the RK4 step; falls back to eager on failure
 stage1_force: false
+bn_reestimate: true  # recompute BatchNorm running stats on full-domain inputs before stage 2 (both baselines were trained on 256^2 patches); weights unchanged
 
 # --- diagnostics -----------------------------------------------------------------------------
 grad_diag: true        # decompose CNN1's gradient into streamline vs direct routes + save a plot
