@@ -15,17 +15,17 @@ randomK: true    # True for varyK datasets (flow main-direction switched)
 t_steps: 10000   # streamline samples; also caps the RK4 steps
 sigma: 1.0        # soft-drawing splat width in cells
 v_blur: 4.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
-v_blur_end: 0.0           # anneal target (null = constant v_blur)
+v_blur_end: 4.0           # anneal target (null = constant v_blur)
 v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
 fade_mode: absolute  # streamline fading 1 - t/t_end (cut-invariant; "per_line" = legacy paper convention)
 clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
-lambda_v: 0.0    # pure T loss in stage 2 (stage-1 pretraining supplies the physical velocities); >0 re-enables MSE(T) + lambda_v * MSE(v)
+lambda_v: 0.01    # pure T loss in stage 2 (stage-1 pretraining supplies the physical velocities); >0 re-enables MSE(T) + lambda_v * MSE(v)
 compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure
 detach_direct_v: false  # stop-gradient on CNN2's direct vx/vy channels -> CNN1's T-loss signal flows only through the streamlines
-stage1_force: true    # true = retrain stage 1 even if a cached unet_v_pretrained.pt exists
+stage1_force: false    # true = retrain stage 1 even if a cached unet_v_pretrained.pt exists
 bn_reestimate: true   # after stage 1, recompute BatchNorm running stats on full-domain inputs (stage 1 trains CNN1 on 256^2 patches, stage 2 is full-domain); weights unchanged
 grad_diag: true       # after stage 1, decompose CNN1's gradient into streamline vs direct routes + save a plot
-grad_diag_only: true  # stop right after the diagnostic (get the plot without running all stage-2 epochs)
+grad_diag_only: false  # stop right after the diagnostic (get the plot without running all stage-2 epochs)
 pipeline_plot_every: 25  # stage 2: every N optimizer steps save each stage's (CNN1/streamlines/CNN2) in- and output plus the loss gradients before/after it -> destination/pipeline_plots/; 0 = off
 pipeline_plot_max: 40    # cap on the number of such plots per run (0 = unlimited)
 order_data:
