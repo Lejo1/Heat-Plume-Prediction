@@ -209,8 +209,15 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                         pipeline_tap=tap if tap.enabled else None,
                         epoch_callback=make_v_blur_schedule(model, args))
         # programmatic schedule instead of load_lr_schedule: the fallback default_lr_schedule.csv
-        # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied
-        solver.lr_schedule = {0: args["lr"], int(0.7 * args["epochs"]): args["lr"] / 10}
+        # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied.
+        # lr_decay re-enables the 10x drop after 70% of the epochs; off by default, so the lr stays
+        # constant for the whole of stage 2.
+        solver.lr_schedule = {0: args["lr"]}
+        if args.get("lr_decay", False):
+            solver.lr_schedule[int(0.7 * args["epochs"])] = args["lr"] / 10
+        print(f"STAGE 2 lr: {args['lr']:.2e}"
+              + (f", dropping to {args['lr']/10:.2e} at epoch {int(0.7 * args['epochs'])}"
+                 if args.get("lr_decay", False) else " (constant)"))
         print(f"STAGE 2: joint end-to-end training, {args['epochs']} epochs")
         training_time = datetime.now()
         try:
