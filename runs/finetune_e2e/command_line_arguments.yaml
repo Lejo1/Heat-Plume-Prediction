@@ -43,7 +43,7 @@ fade_mode: per_line  # the offline step-2 datasets use the paper's per-line fadi
 
 # --- optimization ----------------------------------------------------------------------------
 clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
-lambda_v: 0.05     # small MSE(v) term anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+lambda_v: 0.01     # small MSE(v) term anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
 detach_direct_v: false  # keep CNN2's direct vx/vy channels live - that is how baseline_T was trained; true only to force all signal through the streamlines
 compile: true      # torch.compile the RK4 step; falls back to eager on failure
 stage1_force: false
@@ -54,6 +54,12 @@ grad_diag: true        # decompose CNN1's gradient into streamline vs direct rou
 grad_diag_only: false  # false = actually run the finetuning
 pipeline_plot_every: 25  # every N optimizer steps: each stage's in/out + the loss gradients around it
 pipeline_plot_max: 40    # cap on the number of such plots (0 = unlimited)
+
+# blur
+v_blur: 4.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
+v_blur_end: 4.0           # anneal target (null = constant v_blur)
+v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
+
 
 order_data:
 - 0
