@@ -123,8 +123,9 @@ def to_e2e_style(collected_metrics, output_channels):
     return styled
 
 
-# Pelzer et al., Table "Metrics of all experiments", LGCNN rows on synth. 3dp / test.
-# Step 1 is reported per velocity component; Step 3 and end-to-end are temperature in [degC].
+# Pelzer et al., Table "Metrics of all experiments" (main paper), LGCNN rows on synth. 3dp / test.
+# ONE representative run each - Table 8 shows these are not means, so do not treat them as targets.
+# Step 1 is per velocity component [m/y]; Step 3 and end-to-end are temperature [degC].
 PAPER_REFERENCE = {
     "step1_vx": {"MAE": 22.3178, "RMSE": 31.1860, "Huber": 21.8237, "SSIM": 0.9739},
     "step1_vy": {"MAE": 32.7444, "RMSE": 45.0703, "Huber": 32.2488, "SSIM": 0.9733},
@@ -133,30 +134,79 @@ PAPER_REFERENCE = {
     "end_to_end": {"MAE": 0.0916, "RMSE": 0.1738, "Huber": 0.0146, "SSIM": 0.6841},
 }
 
+# Pelzer et al., Table 8 "Statistical error metrics ...": (mean, std) over REPEATED trainings,
+# synth. 3dp / test / no scaling. This is the distribution a new run is drawn from, so |z| < 1 means
+# a statistically ordinary result and chasing the single-run numbers above is chasing noise.
+# Step 1 is extremely noisy (+-20% on the test MAE, +-71% on train vx); Step 3 is stable (+-1%).
+# CAVEAT on end_to_end: that row carries the paper's footnote b, "with fixed first step
+# predictions" - its small std EXCLUDES step-1 variance, so it is only comparable to a chain whose
+# step-1 model is likewise held fixed.
+PAPER_STATISTICS = {
+    "step1_vx": {"MAE": (27.4355, 5.3603), "RMSE": (36.6786, 4.8168),
+                 "Huber": (26.9402, 5.3588), "SSIM": (0.9727, 0.0025)},
+    "step1_vy": {"MAE": (30.8755, 5.5264), "RMSE": (42.5114, 6.4231),
+                 "Huber": (30.3799, 5.5256), "SSIM": (0.9734, 0.0042)},
+    "step3_simulated_v": {"MAE": (0.0452, 0.0005), "RMSE": (0.0829, 0.0011),
+                          "Huber": (0.0034, 0.0001), "SSIM": (0.8381, 0.0040)},
+    "end_to_end": {"MAE": (0.0965, 0.0013), "RMSE": (0.1866, 0.0030),
+                   "Huber": (0.0167, 0.0005), "SSIM": (0.6724, 0.0059)},
+}
 
-def compare_to_paper(styled, output_channels, case="test"):
-    """Print this run's test metrics next to the paper's corresponding row(s)."""
+
+def compare_to_paper(styled, output_channels, case="test", data_name=""):
+    """Print this run's metrics against the paper's single-run row AND its Table-8 distribution.
+
+    The z column is what matters: |z| < 1 is an ordinary draw from the paper's own repeated runs.
+    The single-run column is kept only because it is what the main table quotes.
+    """
     if case not in styled:
         return
     v = styled[case]
-    print(f"\n--- {case} vs. Pelzer et al. (synth. 3dp, test) " + "-" * 34)
+    print(f"\n--- {case} vs. Pelzer et al. (synth. 3dp, test) " + "-" * 46)
+    print("  'row' = single representative run (main table); 'Table 8' = mean +- std over repeated")
+    print("  trainings. |z| < 1 = statistically ordinary; the row is NOT a target.")
+
+    def line(prefix, label, ours, ref_key):
+        row = PAPER_REFERENCE[ref_key][label]
+        d = (ours - row) / row * 100
+        stat = PAPER_STATISTICS.get(ref_key, {}).get(label)
+        if stat is None:
+            print(f"  {prefix:<4} {label:<7} {ours:10.4f} {row:10.4f} {d:+8.1f}% {'-':>21} {'-':>7}")
+            return
+        mean, std = stat
+        z = (ours - mean) / std if std else float("nan")
+        flag = "" if abs(z) < 1 else ("  <-- outside 1 sigma" if abs(z) < 3 else "  <-- OUTSIDE 3 sigma")
+        print(f"  {prefix:<4} {label:<7} {ours:10.4f} {row:10.4f} {d:+8.1f}% "
+              f"{mean:10.4f} +-{std:8.4f} {z:+7.2f}{flag}")
+
+    print(f"  {'':<4} {'metric':<7} {'ours':>10} {'row':>10} {'delta':>9} "
+          f"{'Table 8 mean':>10}   {'std':>8} {'z':>7}")
     if output_channels == 2:
-        rows = [("vx", "step1_vx", "MAE vx [m/y]", "RMSE vx [m/y]", "Huber vx [m/y]", "SSIM vx"),
-                ("vy", "step1_vy", "MAE vy [m/y]", "RMSE vy [m/y]", "Huber vy [m/y]", "SSIM vy")]
-        print(f"  {'':<4} {'metric':<7} {'ours':>10} {'paper':>10} {'delta':>9}")
-        for name, ref_key, mae, rmse, hub, ssim in rows:
-            ref = PAPER_REFERENCE[ref_key]
-            for label, key in (("MAE", mae), ("RMSE", rmse), ("Huber", hub), ("SSIM", ssim)):
-                ours, paper = v[key], ref[label]
-                print(f"  {name:<4} {label:<7} {ours:10.4f} {paper:10.4f} {(ours-paper)/paper*100:+8.1f}%")
+        for name, ref_key in (("vx", "step1_vx"), ("vy", "step1_vy")):
+            for label, key in (("MAE", f"MAE {name} [m/y]"), ("RMSE", f"RMSE {name} [m/y]"),
+                               ("Huber", f"Huber {name} [m/y]"), ("SSIM", f"SSIM {name}")):
+                line(name, label, v[key], ref_key)
     else:
-        print("  temperature model - compare against 'step3_simulated_v' (streamlines from simulated v),")
-        print("  'step3_in_sequence' / 'end_to_end' (streamlines from predicted v):")
-        for ref_key in ("step3_simulated_v", "step3_in_sequence", "end_to_end"):
-            ref = PAPER_REFERENCE[ref_key]
-            print(f"  {ref_key:<20} " + " ".join(f"{k} {ref[k]:.4f}" for k in ["MAE", "RMSE", "Huber", "SSIM"]))
-        print(f"  {'ours':<20} MAE {v['MAE [degC]']:.4f} RMSE {v['RMSE [degC]']:.4f} "
-              f"Huber {v['Huber [degC]']:.4f} SSIM {v['SSIM']:.4f}")
+        # which reference applies depends on where the streamlines came from: a "prep_with_<model>"
+        # dataset was drawn from PREDICTED velocities (the chained pipeline), anything else from the
+        # simulated ones (step 3 in isolation). Comparing against the wrong one is meaningless.
+        chained = "prep_with" in str(data_name)
+        ref_key, tag = ("end_to_end", "e2e") if chained else ("step3_simulated_v", "sim")
+        print(f"  dataset {'contains' if chained else 'does not contain'} 'prep_with' -> streamlines "
+              f"from {'PREDICTED' if chained else 'simulated'} v, comparing against '{ref_key}'.")
+        keys = {"MAE": "MAE [degC]", "RMSE": "RMSE [degC]", "Huber": "Huber [degC]", "SSIM": "SSIM"}
+        for label, key in keys.items():
+            line(tag, label, v[key], ref_key)
+        if chained:
+            print("  NOTE: this Table-8 row uses FIXED first-step predictions (paper footnote b), so its")
+            print("        std excludes step-1 variance - comparable only if your chain also pins step 1.")
+            row = PAPER_REFERENCE["step3_in_sequence"]
+            print("  'UNet in sequence' (single run) for reference: "
+                  + " ".join(f"{k} {row[k]:.4f}" for k in ["MAE", "RMSE", "Huber", "SSIM"]))
+        else:
+            print("  CAVEAT: Table 8's step-3 mean (MAE 0.0452) disagrees with the main table's single")
+            print("        run (0.0417) and with Pelzer's own shipped model (0.0347), so those repeats")
+            print("        are evidently a different set. Trust its STD (~1%), not its mean, here.")
 
 def plot_collected_metrics(collected_metrics, output_channels, save_path):
     """Bar chart of all metrics for all evaluated cases (train / val / test), per output channel."""
@@ -359,7 +409,7 @@ if __name__=="__main__":
     save_yaml(styled, PATH_DESTINATION / f"metrics_e2e-style_{PATH_MODEL.name} {PATH_PREP_DATA.name}.yaml")
     for case, values in styled.items():
         print(f"{case}: " + " | ".join(f"{k} {v:.4f}" for k, v in values.items()))
-    compare_to_paper(styled, output_channels)
+    compare_to_paper(styled, output_channels, data_name=PATH_PREP_DATA.name)
 
     # exemplary use on how to calculate mean, std, min and max for several runs of one set of hyperparameters
     # (needs a folder with metrics_run<id>.yaml files from repeated trainings - disabled by default)
