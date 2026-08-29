@@ -8,7 +8,7 @@ depth: 4
 destination: ../runs/baseline_v
 device: cuda
 dilation: 1
-epochs: 50
+epochs: 300  # Julia's BEST_predict_v_v4 decays the lr at epoch 120 and 260 (learning_rate_history.csv), so the run has to reach past 260 for the schedule to apply at all
 init_features: 32
 inputs: pki
 kernel_size: 5

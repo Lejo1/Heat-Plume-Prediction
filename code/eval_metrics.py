@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import torch
 from torch.nn import MSELoss, L1Loss, HuberLoss
@@ -108,14 +109,54 @@ def to_e2e_style(collected_metrics, output_channels):
                 "PAT0.1 [%]": float(m["PAT0.1 [%]"][0]),
                 "PAT1.0 [%]": float(m["PAT1.0 [%]"][0]),
             }
-        else:  # velocity model
+        else:  # velocity model - same four metrics the paper's Step-1 row reports, per channel
             styled[case] = {
                 "MAE vx [m/y]": float(m["MAE [phys. unit]"][0]),
                 "MAE vy [m/y]": float(m["MAE [phys. unit]"][1]),
                 "RMSE vx [m/y]": float(m["MSE [phys. unit^2]"][0]) ** 0.5,
                 "RMSE vy [m/y]": float(m["MSE [phys. unit^2]"][1]) ** 0.5,
+                "Huber vx [m/y]": float(m["Huber [phys. unit]"][0]),
+                "Huber vy [m/y]": float(m["Huber [phys. unit]"][1]),
+                "SSIM vx": float(m["SSIM"][0]),
+                "SSIM vy": float(m["SSIM"][1]),
             }
     return styled
+
+
+# Pelzer et al., Table "Metrics of all experiments", LGCNN rows on synth. 3dp / test.
+# Step 1 is reported per velocity component; Step 3 and end-to-end are temperature in [degC].
+PAPER_REFERENCE = {
+    "step1_vx": {"MAE": 22.3178, "RMSE": 31.1860, "Huber": 21.8237, "SSIM": 0.9739},
+    "step1_vy": {"MAE": 32.7444, "RMSE": 45.0703, "Huber": 32.2488, "SSIM": 0.9733},
+    "step3_simulated_v": {"MAE": 0.0417, "RMSE": 0.0762, "Huber": 0.0029, "SSIM": 0.8540},
+    "step3_in_sequence": {"MAE": 0.0919, "RMSE": 0.1695, "Huber": 0.0139, "SSIM": 0.6714},
+    "end_to_end": {"MAE": 0.0916, "RMSE": 0.1738, "Huber": 0.0146, "SSIM": 0.6841},
+}
+
+
+def compare_to_paper(styled, output_channels, case="test"):
+    """Print this run's test metrics next to the paper's corresponding row(s)."""
+    if case not in styled:
+        return
+    v = styled[case]
+    print(f"\n--- {case} vs. Pelzer et al. (synth. 3dp, test) " + "-" * 34)
+    if output_channels == 2:
+        rows = [("vx", "step1_vx", "MAE vx [m/y]", "RMSE vx [m/y]", "Huber vx [m/y]", "SSIM vx"),
+                ("vy", "step1_vy", "MAE vy [m/y]", "RMSE vy [m/y]", "Huber vy [m/y]", "SSIM vy")]
+        print(f"  {'':<4} {'metric':<7} {'ours':>10} {'paper':>10} {'delta':>9}")
+        for name, ref_key, mae, rmse, hub, ssim in rows:
+            ref = PAPER_REFERENCE[ref_key]
+            for label, key in (("MAE", mae), ("RMSE", rmse), ("Huber", hub), ("SSIM", ssim)):
+                ours, paper = v[key], ref[label]
+                print(f"  {name:<4} {label:<7} {ours:10.4f} {paper:10.4f} {(ours-paper)/paper*100:+8.1f}%")
+    else:
+        print("  temperature model - compare against 'step3_simulated_v' (streamlines from simulated v),")
+        print("  'step3_in_sequence' / 'end_to_end' (streamlines from predicted v):")
+        for ref_key in ("step3_simulated_v", "step3_in_sequence", "end_to_end"):
+            ref = PAPER_REFERENCE[ref_key]
+            print(f"  {ref_key:<20} " + " ".join(f"{k} {ref[k]:.4f}" for k in ["MAE", "RMSE", "Huber", "SSIM"]))
+        print(f"  {'ours':<20} MAE {v['MAE [degC]']:.4f} RMSE {v['RMSE [degC]']:.4f} "
+              f"Huber {v['Huber [degC]']:.4f} SSIM {v['SSIM']:.4f}")
 
 def plot_collected_metrics(collected_metrics, output_channels, save_path):
     """Bar chart of all metrics for all evaluated cases (train / val / test), per output channel."""
@@ -292,10 +333,21 @@ if __name__=="__main__":
     #   step 1 isolated:  runs/baseline_v + "... inputs_pki outputs_xy"                                    (pki -> v)
     #   step 3 isolated:  runs/baseline_T + "... inputs_ixydk+s_outer outputs_t"                           (T on simulated v)
     #   full pipeline:    runs/baseline_T + "... inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45" (T on predicted v)
-    PATH_PREP_DATA = Path("../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45") # TODO: change to your path
-    PATH_MODEL = Path("runs/baseline_T") # TODO: change to your path
-    PATH_DESTINATION = PATH_MODEL
-    SCALING = False #or True, if it should be evaluated on the scaling test data
+    #   step 1 vs paper:  runs/baseline_v + "... inputs_pki outputs_xy"  -> compare to Table "Step 1 (vx/vy)"
+    # Defaults reproduce the previous hardcoded behaviour; override from the command line, e.g.
+    #   python eval_metrics.py --model runs/baseline_v --data "../datasets_prep/dataset_giant_100hp_varyK inputs_pki outputs_xy"
+    parser = argparse.ArgumentParser(description="Paper-style metrics for one trained model.")
+    parser.add_argument("--model", type=Path,
+                        default=Path("runs/baseline_T"))
+    parser.add_argument("--data", type=Path,
+                        default=Path("../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45"))
+    parser.add_argument("--destination", type=Path, default=None, help="default: the model directory")
+    parser.add_argument("--scaling", action="store_true", help="evaluate on the scaling test data")
+    cli = parser.parse_args()
+    PATH_PREP_DATA = cli.data
+    PATH_MODEL = cli.model
+    PATH_DESTINATION = cli.destination or PATH_MODEL
+    SCALING = cli.scaling
 
     dataloaders, model, norm, info, args, output_channels = preparation(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, scaling=SCALING)
     collected = collect_metrics(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, args, output_channels)
@@ -307,6 +359,7 @@ if __name__=="__main__":
     save_yaml(styled, PATH_DESTINATION / f"metrics_e2e-style_{PATH_MODEL.name} {PATH_PREP_DATA.name}.yaml")
     for case, values in styled.items():
         print(f"{case}: " + " | ".join(f"{k} {v:.4f}" for k, v in values.items()))
+    compare_to_paper(styled, output_channels)
 
     # exemplary use on how to calculate mean, std, min and max for several runs of one set of hyperparameters
     # (needs a folder with metrics_run<id>.yaml files from repeated trainings - disabled by default)
