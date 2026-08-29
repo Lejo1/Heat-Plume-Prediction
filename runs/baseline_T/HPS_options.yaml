@@ -45,4 +45,4 @@ optimizer_switch:
   - False
 lr:
   values:
-  - 0.0001
+  - 0.00001  # Julia's Optuna trial 21 used lr 1e-5 for step 3; the 1e-4 shipped in her HPS_options.yaml is stale (see training/log.out)

@@ -13,7 +13,7 @@ init_features: 32
 inputs: ixydkc
 kernel_size: 4
 len_box: 256
-lr: 0.0001
+lr: 0.00001  # step 3 trains at 1e-5, not 1e-4 (Optuna trial 21); load_hyperparams takes this from HPS_options.yaml anyway
 model: null
 norm: batchnorm
 notes: baseline step 3 (predict T), synthetic-permeability (varyK) dataset, DaRUS
