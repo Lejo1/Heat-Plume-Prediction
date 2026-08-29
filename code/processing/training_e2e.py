@@ -217,9 +217,15 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                   + (f", at most {tap.max_plots} plots" if tap.max_plots > 0 else "")
                   + f" -> {tap.dir}")
 
+        # The two stages want different learning rates and `lr` alone cannot serve both: stage 1 is
+        # step-1 training, whose tuned rate is 1e-4 (paper, and baseline_v converges with it), while
+        # stage 2 is dominated by CNN2, whose tuned rate is 1e-5 (Pelzer's Optuna trial 21; at 1e-4
+        # baseline_T stalls at best_epoch 2/50). Stage 2 is also full-domain batch-1, which argues
+        # for the lower rate again. lr_stage2 overrides `lr` for stage 2 only; unset = use `lr`.
+        lr2 = float(args.get("lr_stage2") or args["lr"])
         solver = Solver(model, dataloaders["train"], dataloaders["val"],
                         loss_func=E2ELoss(lambda_v=args.get("lambda_v", 0.0)),
-                        finetune=True, learning_rate=args["lr"],
+                        finetune=True, learning_rate=lr2,
                         clip_grad_norm=args.get("clip_grad", 1.0),
                         pipeline_tap=tap if tap.enabled else None,
                         epoch_callback=make_v_blur_schedule(model, args))
@@ -227,11 +233,12 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied.
         # lr_decay re-enables the 10x drop after 70% of the epochs; off by default, so the lr stays
         # constant for the whole of stage 2.
-        solver.lr_schedule = {0: args["lr"]}
+        solver.lr_schedule = {0: lr2}
         if args.get("lr_decay", False):
-            solver.lr_schedule[int(0.7 * args["epochs"])] = args["lr"] / 10
-        print(f"STAGE 2 lr: {args['lr']:.2e}"
-              + (f", dropping to {args['lr']/10:.2e} at epoch {int(0.7 * args['epochs'])}"
+            solver.lr_schedule[int(0.7 * args["epochs"])] = lr2 / 10
+        print(f"STAGE 2 lr: {lr2:.2e}"
+              + (" (from lr_stage2)" if args.get("lr_stage2") else " (from lr)")
+              + (f", dropping to {lr2/10:.2e} at epoch {int(0.7 * args['epochs'])}"
                  if args.get("lr_decay", False) else " (constant)"))
         print(f"STAGE 2: joint end-to-end training, {args['epochs']} epochs")
         training_time = datetime.now()

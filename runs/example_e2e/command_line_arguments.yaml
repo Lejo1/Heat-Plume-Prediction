@@ -12,6 +12,7 @@ epochs: 500        # stage 2 (joint full-pipeline training; 1 optimizer step per
 #   ../runs/baseline_v               our own step-1 run
 model_v: ../../models/BEST_predict_v_v4
 stage1_epochs: 50  # stage 1: pretrain CNN1 on velocities with the partitioned dataset (~1000 patch-batches/epoch; matches baseline_v's 50 epochs); 0 = skip
+lr_stage2: 0.00001  # stage 2 only; stage 1 keeps HPS lr (1e-4, the tuned step-1 rate). CNN2's tuned rate is 1e-5 - at 1e-4 baseline_T stalled at best_epoch 2/50.
 inputs: pki
 model: null
 notes: end-to-end LGCNN (CNN1 + differentiable streamlines + CNN2), pure T loss, from scratch
