@@ -66,34 +66,43 @@ class LGCNNEndToEnd(Model):
         self.capture_intermediates = False
         self.tapped = {}
 
-    def load_baselines(self, path_v, path_T, device: str = "cpu", model_name: str = "model.pt"):
-        """Initialize CNN1 and CNN2 from the two separately trained baseline runs (step 1: pki->v,
-        step 3: ixydk+s_outer->T) instead of from one end-to-end checkpoint.
+    def _load_unet(self, net, path, label: str, device: str = "cpu", model_name: str = "model.pt"):
+        """Load one sub-net from a separately trained run directory, with a legible shape check.
 
-        The two baselines were tuned independently, so their architectures need not agree with each
-        other or with this run's HPS_options.yaml. A mismatch would otherwise surface as an opaque
-        state_dict error, so every disagreement is reported with the parameter shapes involved."""
+        The step-1/step-3 runs were tuned independently, so their architectures need not agree with
+        each other or with this run's HPS_options.yaml. A mismatch would otherwise surface as an
+        opaque state_dict error, so every disagreement is reported with the parameter shapes."""
         location = "cuda:0" if "cuda" in str(device) else "cpu"
-        for label, path, net in (("CNN1 (unet_v)", path_v, self.unet_v),
-                                 ("CNN2 (unet_T)", path_T, self.unet_T)):
-            ckpt = Path(path) / model_name
-            assert ckpt.exists(), f"{label}: checkpoint {ckpt} not found"
-            sd = torch.load(ckpt, map_location=location)
-            sd = sd.state_dict() if hasattr(sd, "state_dict") else sd
-            here = net.state_dict()
-            bad = [(k, tuple(v.shape), tuple(here[k].shape)) for k, v in sd.items()
-                   if k in here and v.shape != here[k].shape]
-            missing = [k for k in here if k not in sd] + [k for k in sd if k not in here]
-            if bad or missing:
-                detail = "".join(f"\n    {k}: checkpoint {a} vs model {b}" for k, a, b in bad[:8])
-                if missing:
-                    detail += f"\n    {len(missing)} key(s) present in only one of the two, e.g. {missing[:3]}"
-                raise RuntimeError(
-                    f"{label}: {ckpt} does not fit this run's architecture.{detail}\n"
-                    f"  The first conv's kernel shape reveals the trained kernel_size; set it in "
-                    f"HPS_options.yaml (CNN1) or via unet_args_T in command_line_arguments.yaml (CNN2).")
-            net.load_state_dict(sd)
-            print(f"  loaded {label} from {ckpt} ({sum(p.numel() for p in net.parameters()):,} params)")
+        ckpt = Path(path) / model_name
+        assert ckpt.exists(), f"{label}: checkpoint {ckpt} not found"
+        sd = torch.load(ckpt, map_location=location)
+        sd = sd.state_dict() if hasattr(sd, "state_dict") else sd
+        here = net.state_dict()
+        bad = [(k, tuple(v.shape), tuple(here[k].shape)) for k, v in sd.items()
+               if k in here and v.shape != here[k].shape]
+        missing = [k for k in here if k not in sd] + [k for k in sd if k not in here]
+        if bad or missing:
+            detail = "".join(f"\n    {k}: checkpoint {a} vs model {b}" for k, a, b in bad[:8])
+            if missing:
+                detail += f"\n    {len(missing)} key(s) present in only one of the two, e.g. {missing[:3]}"
+            raise RuntimeError(
+                f"{label}: {ckpt} does not fit this run's architecture.{detail}\n"
+                f"  The first conv's kernel shape reveals the trained kernel_size; set it in "
+                f"HPS_options.yaml (CNN1) or via unet_args_T in command_line_arguments.yaml (CNN2).")
+        net.load_state_dict(sd)
+        print(f"  loaded {label} from {ckpt} ({sum(p.numel() for p in net.parameters()):,} params)")
+
+    def load_baselines(self, path_v, path_T, device: str = "cpu", model_name: str = "model.pt"):
+        """Initialize CNN1 and CNN2 from the two separately trained runs (step 1: pki->v,
+        step 3: ixydk+s_outer->T) instead of from one end-to-end checkpoint."""
+        self._load_unet(self.unet_v, path_v, "CNN1 (unet_v)", device, model_name)
+        self._load_unet(self.unet_T, path_T, "CNN2 (unet_T)", device, model_name)
+        self.to(device)
+
+    def load_pretrained_v(self, path_v, device: str = "cpu", model_name: str = "model.pt"):
+        """Seed CNN1 alone from an existing step-1 run, leaving CNN2 as initialized. Used by the
+        from-scratch pipeline in place of its own stage-1 pretraining."""
+        self._load_unet(self.unet_v, path_v, "CNN1 (unet_v)", device, model_name)
         self.to(device)
 
     def _tap(self, name: str, t: torch.Tensor) -> torch.Tensor:

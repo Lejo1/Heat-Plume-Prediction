@@ -12,8 +12,12 @@ device: cuda
 # Bachelorarbeit/runs, use ../../runs/<name> instead. A missing model.pt fails immediately with
 # the full path, so this is a one-line fix rather than a silent fallback.
 model: null
-model_v: ../runs/baseline_v   # step 1: pki -> vx, vy    (kernel_size 5, MSE)
-model_T: ../runs/baseline_T   # step 3: ixydk+s_outer -> T (kernel_size 4, MAE)
+# Swap these for Pelzer's own models to finetune HER two-stage pipeline instead of ours (both are
+# architecture-compatible, verified, and share our datasets' normalization stats):
+model_v: ../../models/BEST_predict_v_v4
+model_T: ../../models/BEST_predict_T_add_s_outer (isolated test MAE 0.0347 vs our 0.0400)
+#model_v: ../runs/baseline_v   # step 1: pki -> vx, vy    (kernel_size 5, MSE)
+#model_T: ../runs/baseline_T   # step 3: ixydk+s_outer -> T (kernel_size 4, MAE)
 
 # baseline_v was tuned with kernel_size 5, baseline_T with kernel_size 4, so CNN2 cannot share
 # CNN1's architecture. HPS_options.yaml holds CNN1's; this overrides only what differs for CNN2.
@@ -39,7 +43,7 @@ randomK: true      # True for varyK datasets (flow main-direction switched)
 # NOT the 10.0 of the from-scratch experiments: that is a channel CNN2 has never seen.
 t_steps: 10000     # streamline samples; also caps the RK4 steps
 sigma: 1.0         # soft-drawing splat width in cells
-fade_mode: per_line  # the offline step-2 datasets use the paper's per-line fading
+fade_mode: absolute  # the offline step-2 datasets use the paper's per-line fading
 
 # --- optimization ----------------------------------------------------------------------------
 clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
@@ -56,8 +60,8 @@ pipeline_plot_every: 25  # every N optimizer steps: each stage's in/out + the lo
 pipeline_plot_max: 40    # cap on the number of such plots (0 = unlimited)
 
 # blur
-v_blur: 4.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
-v_blur_end: 4.0           # anneal target (null = constant v_blur)
+v_blur: 0.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
+v_blur_end: 0.0           # anneal target (null = constant v_blur)
 v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
 
 

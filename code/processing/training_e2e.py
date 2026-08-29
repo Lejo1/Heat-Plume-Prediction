@@ -82,7 +82,22 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
     # (~1000 patch-batches per epoch instead of 1 full-domain step; no streamlines/CNN2 -> cheap).
     # The trained weights are cached to unet_v_pretrained.pt and reused on later runs, so the
     # ~35 min pretraining runs only once (delete the file or set stage1_force: true to retrain).
-    if args["case"] == "train" and args.get("stage1_epochs", 0) > 0:
+    # model_v in the "train" case seeds CNN1 from an existing step-1 run instead of pretraining it
+    # here. Besides saving the ~35 min of stage 1, this PINS step 1 across experiments: the paper
+    # reports +-20% run-to-run spread on the step-1 test MAE (Table 8), so an unpinned CNN1 makes
+    # e2e runs incomparable to each other. Pelzer's own end-to-end statistics use the same trick
+    # ("with fixed first step predictions", footnote b). CNN2 stays randomly initialized.
+    if args["case"] == "train" and args.get("model_v"):
+        print(f"STAGE 1 skipped - seeding CNN1 from {args['model_v']} (CNN2 stays randomly initialized):")
+        model.load_pretrained_v(args["model_v"], args["device"])
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        print("Seeded CNN1 check (paper step-1 reference: 22.3 / 32.7 m/y, Table 8 mean 27.4 / 30.9):")
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    elif args["case"] == "train" and args.get("stage1_epochs", 0) > 0:
         stage1_dir = args["destination"] / "stage1_v"
         stage1_dir.mkdir(parents=True, exist_ok=True)
         stage1_ckpt = stage1_dir / "unet_v_pretrained.pt"
