@@ -15,7 +15,7 @@ model: null
 # Swap these for Pelzer's own models to finetune HER two-stage pipeline instead of ours (both are
 # architecture-compatible, verified, and share our datasets' normalization stats):
 model_v: ../../models/BEST_predict_v_v4
-model_T: ../../models/BEST_predict_T_add_s_outer (isolated test MAE 0.0347 vs our 0.0400)
+model_T: ../../models/BEST_predict_T_add_s_outer
 #model_v: ../runs/baseline_v   # step 1: pki -> vx, vy    (kernel_size 5, MSE)
 #model_T: ../runs/baseline_T   # step 3: ixydk+s_outer -> T (kernel_size 4, MAE)
 
