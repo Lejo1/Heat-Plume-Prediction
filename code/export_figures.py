@@ -37,10 +37,13 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent))
 from postprocessing.visualization import (DataToVisualize, plot_datafields, prepare_data_to_plot,
                                           reverse_norm_one_dp)
+from torch.utils.data import DataLoader
+
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.unetVariants import UNetNoPad2
+from processing.training_e2e import reestimate_bn_stats
 from step2_streamlines.streamlines_main import build_streamlines
 import eval_metrics as em
 
@@ -121,6 +124,10 @@ PLOT_STREAMLINE_CHANNELS = True      # render sf / sf+sf_outer for e2e entries
 # Costs memory: all runs' fields are held at once (~370 MB per e2e run at 2560^2) because the shared
 # range is only known after the last run. Set False to stream one run at a time instead.
 SHARED_COLOR_SCALE = True
+# Also render each e2e run's state BEFORE stage 2, as the visual counterpart to its
+# measurements_test_start.yaml. Rebuilt from model_v + model_T (+ bn_reestimate) rather than a
+# checkpoint, since none is saved at epoch 0. Per-entry `include_start=` overrides this.
+INCLUDE_START_INFERENCE = True
 SEPARATE_BAR_CHARTS = True           # one standalone figure per metric -> figures/bars/<metric>.png
 COMBINED_BAR_CHART = True            # the multi-panel overview -> figures/comparison_bars.png
 
@@ -212,11 +219,18 @@ def fields_two_stage(model_dir: Path, data_dir: Path):
     return prepare_data_to_plot(x_r, y_r, out_r, info)
 
 
-def fields_e2e(run_dir: Path):
-    """End-to-end run: rebuild the model as training_e2e did, then mirror prepare_data_to_plot."""
+def fields_e2e(run_dir: Path, at_start: bool = False):
+    """End-to-end run: rebuild the model as training_e2e did, then mirror prepare_data_to_plot.
+
+    at_start reconstructs the model as it stood BEFORE stage 2 - the two baselines loaded and, if
+    the run used it, BatchNorm re-estimated - i.e. exactly the state `measurements_test_start.yaml`
+    was measured on. There is no epoch-0 checkpoint on disk; this rebuilds it from the run's config,
+    which is reproducible because nothing random happens between loading and the first optimizer
+    step. Only meaningful for e2e runs; a two-stage entry has no "before training" state."""
     args = yaml.safe_load((run_dir / "command_line_arguments.yaml").read_text())
     hps = yaml.safe_load((run_dir / "HPS_options.yaml").read_text())
-    ds = DataPointE2E(prep_root(), Path(args["data_raw"]).name, i=args["order_data"][SPLIT_INDEX])
+    name = Path(args["data_raw"]).name
+    ds = DataPointE2E(prep_root(), name, i=args["order_data"][SPLIT_INDEX])
     x, y = ds[0]
     ua = unet_args_from(hps)
     model = LGCNNEndToEnd(v_stats=ds.info_v["Labels"], unet_args=ua,
@@ -225,7 +239,18 @@ def fields_e2e(run_dir: Path):
                           fade_mode=args.get("fade_mode", "absolute"),
                           detach_direct_v=args.get("detach_direct_v", False),
                           v_blur=args.get("v_blur", 0.0) or 0.0).float()
-    model.load(run_dir, DEVICE)
+    if at_start:
+        assert args.get("model_v") and args.get("model_T"), \
+            f"{run_dir.name}: cannot rebuild the start state without model_v + model_T"
+        model.load_baselines(resolve(args["model_v"]), resolve(args["model_T"]), DEVICE)
+        if args.get("bn_reestimate", False):
+            train_ds = DataPointE2E(prep_root(), name, i=args["order_data"][0])
+            n_bn, n_passes = reestimate_bn_stats(
+                model, DataLoader(train_ds, batch_size=1), DEVICE,
+                repeats=args.get("bn_reestimate_repeats", 1))
+            print(f"    re-estimated {n_bn} BatchNorm layers from {n_passes} pass(es)")
+    else:
+        model.load(run_dir, DEVICE)
     model.eval()
     with torch.no_grad():
         pred = model(x.unsqueeze(0).to(DEVICE)).cpu()[0]
@@ -433,14 +458,22 @@ if __name__ == "__main__":
         print(f"Inference plots (device {DEVICE}, "
               f"{'shared' if SHARED_COLOR_SCALE else 'per-run'} colour scale):")
 
-        def compute(e):
-            if "run" in e:
-                return fields_e2e(resolve(e["run"]))
-            data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None)
-            return fields_two_stage(resolve(e["model"]), data_dir)
+        def jobs():
+            """(label, thunk) per figure set - a run may contribute its start state as well."""
+            for e in RUNS:
+                if "run" in e:
+                    if e.get("include_start", INCLUDE_START_INFERENCE):
+                        yield (f"{e['label']} (before e2e)",
+                               lambda e=e: fields_e2e(resolve(e["run"]), at_start=True))
+                    yield e["label"], lambda e=e: fields_e2e(resolve(e["run"]))
+                else:
+                    def two_stage(e=e):
+                        data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None)
+                        return fields_two_stage(resolve(e["model"]), data_dir)
+                    yield e["label"], two_stage
 
-        def write(e, d):
-            target = OUT_DIR / "inference" / slug(e["label"])
+        def write(label, d):
+            target = OUT_DIR / "inference" / slug(label)
             target.parent.mkdir(parents=True, exist_ok=True)
             plot_datafields(d, str(target), {"format": PIC_FORMAT, "dpi": DPI},
                             only_inner=False, plot_all_in_1_pic=False)
@@ -449,17 +482,17 @@ if __name__ == "__main__":
         if SHARED_COLOR_SCALE:
             # the shared range is only known after the last run, so compute everything first
             all_fields = {}
-            for e in RUNS:
-                print(f"  {e['label']!r}")
-                all_fields[e["label"]] = compute(e)
+            for label, thunk in jobs():
+                print(f"  {label!r}")
+                all_fields[label] = thunk()
             n = apply_shared_scales(all_fields)
             print(f"  shared colour scale over {n} field groups")
-            for e in RUNS:
-                write(e, all_fields[e["label"]])
+            for label, d in all_fields.items():
+                write(label, d)
         else:
-            for e in RUNS:
-                print(f"  {e['label']!r}")
-                write(e, compute(e))
+            for label, thunk in jobs():
+                print(f"  {label!r}")
+                write(label, thunk())
 
     if MAKE_COMPARISON_PLOTS:
         print("Comparison charts:")
