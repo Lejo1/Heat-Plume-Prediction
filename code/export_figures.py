@@ -70,7 +70,8 @@ RUNS = [
     # her step 3 on simulated velocities: the isolated step-3 upper bound (no step-1 error at all)
     dict(label="BEST_T isolated\n(simulated v)",
          model="../models/BEST_predict_T_add_s_outer",
-         prep_with=None),
+         prep_with=None,
+         paper_row="step3_simulated_v"),   # different task -> different reference row
     # end-to-end runs
     dict(label="e2e: blur + lr sched", run="../runs/good_fines/finetune_e2e_blur_lr_schedule"),
     dict(label="e2e: no BN, blur",     run="../runs/good_fines/finetune_e2e_nobn_blur_lr_schedule"),
@@ -96,13 +97,18 @@ INCLUDE_START_STATES = True
 
 COMPARISON_METRICS = ["MAE [degC]", "RMSE [degC]", "Huber [degC]", "SSIM",
                       "PAT0.1 [%]", "PAT1.0 [%]", "Linf [degC]"]
-PAPER_ROW = "end_to_end"             # PAPER_REFERENCE key for the reference line
+PAPER_ROW = "end_to_end"             # default PAPER_REFERENCE key for the reference line. An entry
+                                     # measuring a DIFFERENT task (e.g. isolated step 3, which has
+                                     # no step-1 error at all) must override it with paper_row=...,
+                                     # otherwise its bar is judged against an unrelated number.
 SHOW_PAPER_SPREAD = True             # shade +-1 std from PAPER_STATISTICS where available
 # Zoom each panel's y-axis onto the data range instead of starting at 0. The runs differ by a few
 # percent, so a 0-based axis shows nothing; the trade-off is a truncated axis, which is why every
 # bar is also annotated with its exact value. Set False for honest-but-flat 0-based bars.
 ZOOM_YAXIS = True
 PLOT_STREAMLINE_CHANNELS = True      # render sf / sf+sf_outer for e2e entries
+SEPARATE_BAR_CHARTS = True           # one standalone figure per metric -> figures/bars/<metric>.png
+COMBINED_BAR_CHART = True            # the multi-panel overview -> figures/comparison_bars.png
 
 # ==================================================================================================
 
@@ -258,77 +264,121 @@ def entry_metrics(e: dict, which: str = "final"):
     return ensure_metrics(resolve(e["model"]), data_dir)
 
 
+def _draw_metric(ax, key, series, standalone=False):
+    """One metric's bars on one axes. Shared by the combined figure and the per-metric ones."""
+    ref, stat = em.PAPER_REFERENCE.get(PAPER_ROW, {}), em.PAPER_STATISTICS.get(PAPER_ROW, {})
+    colors = ["#c9d3db" if st else "#2a7fb8" for _, _, st, _ in series]
+    vals = [m[key] for _, m, _, _ in series]
+    for b, st in zip(ax.bar(range(len(vals)), vals, color=colors), [s[2] for s in series]):
+        if st:
+            b.set_hatch("//")
+    short = key.split(" [")[0]
+    paper, sub, lo_ref, hi_ref = ref.get(short), "", None, None
+    if paper is not None:
+        ax.axhline(paper, color="#c1440e", lw=1.6, ls="--", zorder=3,
+                   label=f"paper {short} = {paper:.4f}" if standalone else None)
+        sub, lo_ref, hi_ref = f"paper {paper:.4f}", paper, paper
+        if SHOW_PAPER_SPREAD and short in stat:
+            mean, std = stat[short]
+            ax.axhspan(mean - std, mean + std, color="#c1440e", alpha=0.12, zorder=0,
+                       label=f"Table 8 {mean:.4f} $\\pm$ {std:.4f}" if standalone else None)
+            sub += f" | T8 {mean:.4f}$\\pm${std:.4f}"
+            lo_ref, hi_ref = min(lo_ref, mean - std), max(hi_ref, mean + std)
+    if ZOOM_YAXIS:
+        lo, hi = min(vals), max(vals)
+        if lo_ref is not None:
+            lo, hi = min(lo, lo_ref), max(hi, hi_ref)
+        pad = (hi - lo) * 0.18 or abs(hi) * 0.05 or 1.0
+        ax.set_ylim(lo - pad, hi + pad * 1.4)
+    ax.set_xticks(range(len(vals)))
+    ax.set_xticklabels([s[0].replace("\n", " ") for s in series],
+                       rotation=90, fontsize=8 if standalone else 6.5)
+    # entries measuring another task get their own reference drawn over their bar only
+    for i, (_, _, _, row) in enumerate(series):
+        if row == PAPER_ROW:
+            continue
+        own = em.PAPER_REFERENCE.get(row, {}).get(short)
+        if own is not None:
+            ax.hlines(own, i - 0.42, i + 0.42, color="#7b3294", lw=1.8, ls=":", zorder=4,
+                      label=f"{row} = {own:.4f}" if standalone else None)
+    ax.grid(axis="y", ls="--", alpha=0.5)
+    for i, v in enumerate(vals):
+        ax.text(i, v, f"{v:.4f}", ha="center", va="bottom", fontsize=8 if standalone else 6.5)
+    if standalone:
+        ax.set_ylabel(key)
+        ax.set_title(key, fontsize=12)
+        h, l = ax.get_legend_handles_labels()
+        if h:
+            ax.legend(fontsize=8, loc="best")
+    else:
+        ax.set_title(key + (f"\n{sub}" if sub else ""), fontsize=8)
+
+
+def _suptitle(series) -> str:
+    others = sorted({r for _, _, _, r in series if r != PAPER_ROW})
+    return ("red dashed = paper single run, pale band = Table 8 mean $\\pm$1$\\sigma$ "
+            f"(row: {PAPER_ROW})   |   hatched = before e2e training"
+            + (f"\npurple dotted = own reference row for a different task: {', '.join(others)}"
+               if others else ""))
+
+
 def comparison_plots():
     series = []
     for e in RUNS:
         if INCLUDE_START_STATES and "run" in e:
             m0, src0 = entry_metrics(e, "start")
             if m0:
-                series.append((f"{e['label']}\n(before e2e)", m0, True))
+                series.append((f"{e['label']}\n(before e2e)", m0, True, e.get("paper_row", PAPER_ROW)))
                 print(f"    {e['label']!r} start <- {src0}")
         m, src = entry_metrics(e, "final")
         if m is None:
             print(f"    WARNING: no metrics for {e['label']!r} - skipped")
             continue
         print(f"    {e['label']!r:<44} <- {src}")
-        series.append((e["label"], m, False))
+        series.append((e["label"], m, False, e.get("paper_row", PAPER_ROW)))
     if not series:
         print("    nothing to compare"); return
 
-    usable = [k for k in COMPARISON_METRICS if all(k in m for _, m, _ in series)]
+    usable = [k for k in COMPARISON_METRICS if all(k in m for _, m, _, _ in series)]
     if [k for k in COMPARISON_METRICS if k not in usable]:
         print(f"    note: {[k for k in COMPARISON_METRICS if k not in usable]} missing somewhere - omitted")
-    ncol = min(4, len(usable))
-    nrow = int(np.ceil(len(usable) / ncol))
-    fig, axes = plt.subplots(nrow, ncol, figsize=(0.62 * len(series) * ncol + 2.0, 5.4 * nrow),
-                             squeeze=False)
-    ref, stat = em.PAPER_REFERENCE.get(PAPER_ROW, {}), em.PAPER_STATISTICS.get(PAPER_ROW, {})
-    colors = ["#c9d3db" if st else "#2a7fb8" for _, _, st in series]
 
-    for ax, key in zip(axes.flat, usable):
-        vals = [m[key] for _, m, _ in series]
-        for b, st in zip(ax.bar(range(len(vals)), vals, color=colors), [s[2] for s in series]):
-            if st:
-                b.set_hatch("//")
-        short = key.split(" [")[0]
-        paper, sub, lo_ref, hi_ref = ref.get(short), "", None, None
-        if paper is not None:
-            ax.axhline(paper, color="#c1440e", lw=1.6, ls="--", zorder=3)
-            sub, lo_ref, hi_ref = f"paper {paper:.4f}", paper, paper
-            if SHOW_PAPER_SPREAD and short in stat:
-                mean, std = stat[short]
-                ax.axhspan(mean - std, mean + std, color="#c1440e", alpha=0.12, zorder=0)
-                sub += f" | T8 {mean:.4f}$\\pm${std:.4f}"
-                lo_ref, hi_ref = min(lo_ref, mean - std), max(hi_ref, mean + std)
-        if ZOOM_YAXIS:
-            lo, hi = min(vals), max(vals)
-            if lo_ref is not None:
-                lo, hi = min(lo, lo_ref), max(hi, hi_ref)
-            pad = (hi - lo) * 0.18 or abs(hi) * 0.05 or 1.0
-            ax.set_ylim(lo - pad, hi + pad * 1.4)
-        ax.set_title(key + (f"\n{sub}" if sub else ""), fontsize=8)
-        ax.set_xticks(range(len(vals)))
-        # vertical single-line labels: multi-line + rotation collides once there are >4 entries
-        ax.set_xticklabels([s[0].replace("\n", " ") for s in series],
-                           rotation=90, fontsize=6.5)
-        ax.grid(axis="y", ls="--", alpha=0.5)
-        for i, v in enumerate(vals):
-            ax.text(i, v, f"{v:.4f}", ha="center", va="bottom", fontsize=6.5)
-    for ax in axes.flat[len(usable):]:
-        ax.axis("off")
+    if SEPARATE_BAR_CHARTS:
+        d = OUT_DIR / "bars"
+        d.mkdir(parents=True, exist_ok=True)
+        for key in usable:
+            fig, ax = plt.subplots(figsize=(0.75 * len(series) + 3.2, 6.0))
+            _draw_metric(ax, key, series, standalone=True)
+            fig.suptitle(_suptitle(series), fontsize=8, y=0.99)
+            fig.tight_layout(rect=[0, 0, 1, 0.93])
+            out = d / f"{slug(key.split(' [')[0])}.{PIC_FORMAT}"
+            fig.savefig(out, dpi=DPI)
+            plt.close(fig)
+            print(f"    -> {out}")
 
-    fig.suptitle("Run comparison on the test datapoint  "
-                 f"(reference row: {PAPER_ROW}; hatched = before end-to-end training)", fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
-    out = OUT_DIR / f"comparison_bars.{PIC_FORMAT}"
-    fig.savefig(out, dpi=DPI)
-    plt.close(fig)
-    print(f"    -> {out}")
+    if COMBINED_BAR_CHART:
+        ncol = min(4, len(usable))
+        nrow = int(np.ceil(len(usable) / ncol))
+        fig, axes = plt.subplots(nrow, ncol, figsize=(0.62 * len(series) * ncol + 2.0, 5.4 * nrow),
+                                 squeeze=False)
+        for ax, key in zip(axes.flat, usable):
+            _draw_metric(ax, key, series)
+        for ax in axes.flat[len(usable):]:
+            ax.axis("off")
+        fig.suptitle("Run comparison on the test datapoint   |   " + _suptitle(series), fontsize=11)
+        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        out = OUT_DIR / f"comparison_bars.{PIC_FORMAT}"
+        fig.savefig(out, dpi=DPI)
+        plt.close(fig)
+        print(f"    -> {out}")
+
     csv = OUT_DIR / "comparison_table.csv"
-    with csv.open("w") as f:
-        f.write("run," + ",".join(usable) + "\n")
-        for label, m, _ in series:
-            f.write(label.replace("\n", " ") + "," + ",".join(f"{m[k]:.6f}" for k in usable) + "\n")
+    with csv.open("w", newline="") as f:                      # labels contain commas -> csv module
+        import csv as _csv
+        w = _csv.writer(f)
+        w.writerow(["run"] + usable)
+        for label, m, _, _ in series:
+            w.writerow([label.replace("\n", " ")] + [f"{m[k]:.6f}" for k in usable])
     print(f"    -> {csv}")
 
 
