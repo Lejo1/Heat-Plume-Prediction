@@ -229,17 +229,26 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                         clip_grad_norm=args.get("clip_grad", 1.0),
                         pipeline_tap=tap if tap.enabled else None,
                         epoch_callback=make_v_blur_schedule(model, args))
-        # programmatic schedule instead of load_lr_schedule: the fallback default_lr_schedule.csv
-        # would silently drop the lr to 1e-5 at epoch 100, stale history files would be re-applied.
-        # lr_decay re-enables the 10x drop after 70% of the epochs; off by default, so the lr stays
-        # constant for the whole of stage 2.
+        # Programmatic schedule instead of load_lr_schedule: the CSV fallback default_lr_schedule.csv
+        # would silently drop the lr to 1e-5 at epoch 100, and a stale history file from a previous
+        # run would be re-applied. Two ways to shape it, both off by default (constant lr):
+        #   lr_decay: true            legacy shorthand, one 10x drop after 70% of the epochs
+        #   lr_schedule: {epoch: lr}  arbitrary points, same semantics as the baselines'
+        #                             learning_rate_history.csv - merged on top of epoch 0
+        # Explicit lr_schedule points win over the lr_decay shorthand.
         solver.lr_schedule = {0: lr2}
         if args.get("lr_decay", False):
             solver.lr_schedule[int(0.7 * args["epochs"])] = lr2 / 10
-        print(f"STAGE 2 lr: {lr2:.2e}"
-              + (" (from lr_stage2)" if args.get("lr_stage2") else " (from lr)")
-              + (f", dropping to {lr2/10:.2e} at epoch {int(0.7 * args['epochs'])}"
-                 if args.get("lr_decay", False) else " (constant)"))
+        for at_epoch, at_lr in (args.get("lr_schedule") or {}).items():
+            solver.lr_schedule[int(at_epoch)] = float(at_lr)
+        sched = dict(sorted(solver.lr_schedule.items()))
+        print("STAGE 2 lr schedule: "
+              + ", ".join(f"epoch {e} -> {v:.2e}" for e, v in sched.items())
+              + f"   (base from {'lr_stage2' if args.get('lr_stage2') else 'lr'})")
+        never = [e for e in sched if e >= args["epochs"]]
+        if never:
+            print(f"  WARNING: entries at epoch(s) {never} are at or beyond the last epoch "
+                  f"({args['epochs']}) and will never apply")
         print(f"STAGE 2: joint end-to-end training, {args['epochs']} epochs")
         training_time = datetime.now()
         try:

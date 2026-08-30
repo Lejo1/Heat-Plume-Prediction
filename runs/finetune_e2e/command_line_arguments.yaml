@@ -43,9 +43,12 @@ randomK: true      # True for varyK datasets (flow main-direction switched)
 # NOT the 10.0 of the from-scratch experiments: that is a channel CNN2 has never seen.
 t_steps: 10000     # streamline samples; also caps the RK4 steps
 sigma: 1.0         # soft-drawing splat width in cells
-fade_mode: absolute  # the offline step-2 datasets use the paper's per-line fading
+fade_mode: absolute 
 
 # --- optimization ----------------------------------------------------------------------------
+lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_stage2 / lr_decay
+  0: 0.0001          # 1e-4 for the first 5 epochs - deliberately 10x the tuned rate, to push the
+  5: 0.00001         # loaded baselines off their optimum, then back to CNN2's tuned 1e-5
 clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
 lambda_v: 0.01     # small MSE(v) term anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
 detach_direct_v: false  # keep CNN2's direct vx/vy channels live - that is how baseline_T was trained; true only to force all signal through the streamlines
