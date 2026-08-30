@@ -105,7 +105,11 @@ PAPER_ROW = "end_to_end"             # default PAPER_REFERENCE key for the refer
                                      # measuring a DIFFERENT task (e.g. isolated step 3, which has
                                      # no step-1 error at all) must override it with paper_row=...,
                                      # otherwise its bar is judged against an unrelated number.
-SHOW_PAPER_SPREAD = True             # shade +-1 std from PAPER_STATISTICS where available
+# Draw the paper comparison on the bars at all: the dashed single-run line, the Table-8 +-1 sigma
+# band, the per-entry markers, and the caption explaining them. Off = clean bars for export; the
+# numbers are still in comparison_table.csv and in the eval_metrics printout.
+SHOW_PAPER_REFERENCE = False
+SHOW_PAPER_SPREAD = True             # shade +-1 std from PAPER_STATISTICS (only if the above is on)
 # Zoom each panel's y-axis onto the data range instead of starting at 0. The runs differ by a few
 # percent, so a 0-based axis shows nothing; the trade-off is a truncated axis, which is why every
 # bar is also annotated with its exact value. Set False for honest-but-flat 0-based bars.
@@ -270,24 +274,37 @@ def entry_metrics(e: dict, which: str = "final"):
 
 def _draw_metric(ax, key, series, standalone=False):
     """One metric's bars on one axes. Shared by the combined figure and the per-metric ones."""
-    ref, stat = em.PAPER_REFERENCE.get(PAPER_ROW, {}), em.PAPER_STATISTICS.get(PAPER_ROW, {})
     colors = ["#c9d3db" if st else "#2a7fb8" for _, _, st, _ in series]
     vals = [m[key] for _, m, _, _ in series]
     for b, st in zip(ax.bar(range(len(vals)), vals, color=colors), [s[2] for s in series]):
         if st:
             b.set_hatch("//")
     short = key.split(" [")[0]
-    paper, sub, lo_ref, hi_ref = ref.get(short), "", None, None
-    if paper is not None:
-        ax.axhline(paper, color="#c1440e", lw=1.6, ls="--", zorder=3,
-                   label=f"paper {short} = {paper:.4f}" if standalone else None)
-        sub, lo_ref, hi_ref = f"paper {paper:.4f}", paper, paper
-        if SHOW_PAPER_SPREAD and short in stat:
-            mean, std = stat[short]
-            ax.axhspan(mean - std, mean + std, color="#c1440e", alpha=0.12, zorder=0,
-                       label=f"Table 8 {mean:.4f} $\\pm$ {std:.4f}" if standalone else None)
-            sub += f" | T8 {mean:.4f}$\\pm${std:.4f}"
-            lo_ref, hi_ref = min(lo_ref, mean - std), max(hi_ref, mean + std)
+    lo_ref = hi_ref = None
+
+    if SHOW_PAPER_REFERENCE:
+        ref, stat = em.PAPER_REFERENCE.get(PAPER_ROW, {}), em.PAPER_STATISTICS.get(PAPER_ROW, {})
+        paper = ref.get(short)
+        if paper is not None:
+            ax.axhline(paper, color="#c1440e", lw=1.6, ls="--", zorder=3,
+                       label=f"paper {short} = {paper:.4f}" if standalone else None)
+            lo_ref = hi_ref = paper
+            if SHOW_PAPER_SPREAD and short in stat:
+                mean, std = stat[short]
+                ax.axhspan(mean - std, mean + std, color="#c1440e", alpha=0.12, zorder=0,
+                           label=f"Table 8 {mean:.4f} $\\pm$ {std:.4f}" if standalone else None)
+                lo_ref, hi_ref = min(lo_ref, mean - std), max(hi_ref, mean + std)
+        # an entry measuring a different task carries its own reference over its bar only
+        for i, (_, _, _, row) in enumerate(series):
+            if row == PAPER_ROW:
+                continue
+            own = em.PAPER_REFERENCE.get(row, {}).get(short)
+            if own is not None:
+                ax.hlines(own, i - 0.42, i + 0.42, color="#7b3294", lw=1.8, ls=":", zorder=4,
+                          label=f"{row} = {own:.4f}" if standalone else None)
+                lo_ref = own if lo_ref is None else min(lo_ref, own)
+                hi_ref = own if hi_ref is None else max(hi_ref, own)
+
     if ZOOM_YAXIS:
         lo, hi = min(vals), max(vals)
         if lo_ref is not None:
@@ -297,33 +314,14 @@ def _draw_metric(ax, key, series, standalone=False):
     ax.set_xticks(range(len(vals)))
     ax.set_xticklabels([s[0].replace("\n", " ") for s in series],
                        rotation=90, fontsize=8 if standalone else 6.5)
-    # entries measuring another task get their own reference drawn over their bar only
-    for i, (_, _, _, row) in enumerate(series):
-        if row == PAPER_ROW:
-            continue
-        own = em.PAPER_REFERENCE.get(row, {}).get(short)
-        if own is not None:
-            ax.hlines(own, i - 0.42, i + 0.42, color="#7b3294", lw=1.8, ls=":", zorder=4,
-                      label=f"{row} = {own:.4f}" if standalone else None)
     ax.grid(axis="y", ls="--", alpha=0.5)
     for i, v in enumerate(vals):
         ax.text(i, v, f"{v:.4f}", ha="center", va="bottom", fontsize=8 if standalone else 6.5)
+    ax.set_title(key, fontsize=12 if standalone else 9)
     if standalone:
         ax.set_ylabel(key)
-        ax.set_title(key, fontsize=12)
-        h, l = ax.get_legend_handles_labels()
-        if h:
+        if ax.get_legend_handles_labels()[0]:
             ax.legend(fontsize=8, loc="best")
-    else:
-        ax.set_title(key + (f"\n{sub}" if sub else ""), fontsize=8)
-
-
-def _suptitle(series) -> str:
-    others = sorted({r for _, _, _, r in series if r != PAPER_ROW})
-    return ("red dashed = paper single run, pale band = Table 8 mean $\\pm$1$\\sigma$ "
-            f"(row: {PAPER_ROW})   |   hatched = before e2e training"
-            + (f"\npurple dotted = own reference row for a different task: {', '.join(others)}"
-               if others else ""))
 
 
 def comparison_plots():
@@ -353,8 +351,7 @@ def comparison_plots():
         for key in usable:
             fig, ax = plt.subplots(figsize=(0.75 * len(series) + 3.2, 6.0))
             _draw_metric(ax, key, series, standalone=True)
-            fig.suptitle(_suptitle(series), fontsize=8, y=0.99)
-            fig.tight_layout(rect=[0, 0, 1, 0.93])
+            fig.tight_layout()
             out = d / f"{slug(key.split(' [')[0])}.{PIC_FORMAT}"
             fig.savefig(out, dpi=DPI)
             plt.close(fig)
@@ -369,8 +366,11 @@ def comparison_plots():
             _draw_metric(ax, key, series)
         for ax in axes.flat[len(usable):]:
             ax.axis("off")
-        fig.suptitle("Run comparison on the test datapoint   |   " + _suptitle(series), fontsize=11)
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
+        if SHOW_PAPER_REFERENCE:
+            fig.suptitle(_suptitle(series), fontsize=10)
+            fig.tight_layout(rect=[0, 0, 1, 0.94])
+        else:
+            fig.tight_layout()
         out = OUT_DIR / f"comparison_bars.{PIC_FORMAT}"
         fig.savefig(out, dpi=DPI)
         plt.close(fig)
