@@ -60,21 +60,23 @@ RUNS = [
          prep_with="../models/BEST_predict_v_v4"),
     # our two-stage reproduction, chained through our own step 1
     dict(label="our 2-stage\n(baseline_v -> baseline_T)",
-         model="runs/baseline_T",
-         prep_with="runs/baseline_v"),
+         model="../runs/baseline_T",
+         prep_with="../runs/baseline_v"),
     # our step 3 on HER velocities: isolates step 3 from our step-1 quality, and makes the
     # comparison against the finetunes fair, since they all start from BEST_V
     dict(label="our baseline_T\non BEST_V",
-         model="runs/baseline_T",
+         model="../runs/baseline_T",
          prep_with="../models/BEST_predict_v_v4"),
     # her step 3 on simulated velocities: the isolated step-3 upper bound (no step-1 error at all)
     dict(label="BEST_T isolated\n(simulated v)",
          model="../models/BEST_predict_T_add_s_outer",
          prep_with=None),
     # end-to-end runs
-    dict(label="e2e: blur + lr sched", run="runs/good_fines/finetune_e2e_blur_lr_schedule"),
-    dict(label="e2e: no BN, blur",     run="runs/good_fines/finetune_e2e_nobn_blur_lr_schedule"),
-    dict(label="e2e: lr sched only",   run="runs/good_fines/finetune_lr_schedule"),
+    dict(label="e2e: blur + lr sched", run="../runs/good_fines/finetune_e2e_blur_lr_schedule"),
+    dict(label="e2e: no BN, blur",     run="../runs/good_fines/finetune_e2e_nobn_blur_lr_schedule"),
+    dict(label="e2e: lr sched only",   run="../runs/good_fines/finetune_lr_schedule"),
+    dict(label="e2e: no BN, lr sched only",   run="../runs/good_fines/finetune_e2e_lr_schedule_no_bn_restimate"),
+    
 ]
 
 OUT_DIR = Path("figures")            # figures, and any metrics this script computes itself
