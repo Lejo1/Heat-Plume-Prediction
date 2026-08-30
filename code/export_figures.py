@@ -115,6 +115,12 @@ SHOW_PAPER_SPREAD = True             # shade +-1 std from PAPER_STATISTICS (only
 # bar is also annotated with its exact value. Set False for honest-but-flat 0-based bars.
 ZOOM_YAXIS = True
 PLOT_STREAMLINE_CHANNELS = True      # render sf / sf+sf_outer for e2e entries
+# Give the same field the same colour scale in EVERY run's inference plot, so two runs' images can
+# be laid side by side and the colours mean the same thing. Without it each run is scaled to its own
+# min/max, which makes a worse prediction look identical to a better one - error plots especially.
+# Costs memory: all runs' fields are held at once (~370 MB per e2e run at 2560^2) because the shared
+# range is only known after the last run. Set False to stream one run at a time instead.
+SHARED_COLOR_SCALE = True
 SEPARATE_BAR_CHARTS = True           # one standalone figure per metric -> figures/bars/<metric>.png
 COMBINED_BAR_CHART = True            # the multi-panel overview -> figures/comparison_bars.png
 
@@ -252,6 +258,37 @@ def fields_e2e(run_dir: Path):
         d["Streamlines Fade"] = DataToVisualize(sf, "Streamline channel (soft)", "Streamlines Fade", extent)
         d["Streamlines"] = DataToVisualize(sf + sfo, "Streamlines incl. offsets", "Streamlines", extent)
     return d
+
+
+def _scale_group(key: str) -> str:
+    """Fields that must share one colour scale. Prediction and label of the same quantity already
+    share within a run; here they also share ACROSS runs. Error maps get their own group so they are
+    not stretched by the much larger value range of the fields they came from."""
+    for suffix in ("_true", "_out"):
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return key
+
+
+def apply_shared_scales(all_fields: dict) -> int:
+    """Rewrite every DataToVisualize's vmin/vmax to the range of its group over ALL runs."""
+    ranges: dict = {}
+    for d in all_fields.values():
+        for key, dv in d.items():
+            g = _scale_group(key)
+            lo, hi = float(np.min(dv.data)), float(np.max(dv.data))
+            if g in ranges:
+                ranges[g] = (min(ranges[g][0], lo), max(ranges[g][1], hi))
+            else:
+                ranges[g] = (lo, hi)
+    for d in all_fields.values():
+        for key, dv in d.items():
+            lo, hi = ranges[_scale_group(key)]
+            if hi <= lo:
+                continue                       # constant field - leave matplotlib to autoscale
+            dv.vmin, dv.vmax = lo, hi
+            dv.imshowargs["vmin"], dv.imshowargs["vmax"] = lo, hi
+    return len(ranges)
 
 
 def slug(label: str) -> str:
@@ -393,19 +430,36 @@ if __name__ == "__main__":
         resolve(e.get("run") or e["model"])            # fail early on a typo'd path
 
     if MAKE_INFERENCE_PLOTS:
-        print(f"Inference plots (device {DEVICE}):")
-        for e in RUNS:
-            print(f"  {e['label']!r}")
+        print(f"Inference plots (device {DEVICE}, "
+              f"{'shared' if SHARED_COLOR_SCALE else 'per-run'} colour scale):")
+
+        def compute(e):
             if "run" in e:
-                d = fields_e2e(resolve(e["run"]))
-            else:
-                data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None)
-                d = fields_two_stage(resolve(e["model"]), data_dir)
+                return fields_e2e(resolve(e["run"]))
+            data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None)
+            return fields_two_stage(resolve(e["model"]), data_dir)
+
+        def write(e, d):
             target = OUT_DIR / "inference" / slug(e["label"])
             target.parent.mkdir(parents=True, exist_ok=True)
             plot_datafields(d, str(target), {"format": PIC_FORMAT, "dpi": DPI},
                             only_inner=False, plot_all_in_1_pic=False)
             print(f"    -> {len(d)} fields to {target.parent}/{target.name}_*.{PIC_FORMAT}")
+
+        if SHARED_COLOR_SCALE:
+            # the shared range is only known after the last run, so compute everything first
+            all_fields = {}
+            for e in RUNS:
+                print(f"  {e['label']!r}")
+                all_fields[e["label"]] = compute(e)
+            n = apply_shared_scales(all_fields)
+            print(f"  shared colour scale over {n} field groups")
+            for e in RUNS:
+                write(e, all_fields[e["label"]])
+        else:
+            for e in RUNS:
+                print(f"  {e['label']!r}")
+                write(e, compute(e))
 
     if MAKE_COMPARISON_PLOTS:
         print("Comparison charts:")
