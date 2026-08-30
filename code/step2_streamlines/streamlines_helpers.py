@@ -102,16 +102,10 @@ def get_rk4_step(use_compile:bool):
             return rk4_step
     return _rk4_step_compiled
 
-def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=1000, max_step_cells=0.5, use_compile:bool=False):
+def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=10_000, max_step_cells=0.5, use_compile:bool=False):
     # Solve for all start points at once with fixed-step RK4. The step count is chosen so that
     # no point moves more than max_step_cells per step; the coarse solution is then linearly
-    # upsampled to tdraw_streamlines: instead of setting single cells (gradient zero
-    # almost everywhere), every sample spreads a normalized Gaussian of width sigma. Samples are
-    # weighted by their arc length ds, so a cell's density is the faded line length crossing it
-    # (independent of the time-sampling density) and does not saturate where samples are dense.
-    # occupancy = 1 - exp(-density) keeps values in [0,1).
-    # fade_mode "absolute" (default): fade = 1 - t/t_end - independent of where a line is cut,
-    # so patch/window training and full-domain_steps samples for drawing.
+    # upsampled to t_steps samples for drawing.
     # Differentiable: gradients flow through the RK4 steps and the bilinear velocity sampling
     # (wrap calls in torch.no_grad() when gradients are not needed, it is much faster).
     global _compile_failed
