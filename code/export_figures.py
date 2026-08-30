@@ -55,7 +55,7 @@ METHOD_TAG = "RK45"                  # only names the generated folder; the trac
 RUNS = [
     # Pelzer's complete two-stage pipeline: her step 1 feeding her step 3. This is the paper's own
     # chain, and the state every end-to-end run below is finetuned from.
-    dict(label="Pelzer 2-stage\n(BEST_V -> BEST_T)",
+    dict(label="Paper Baseline",
          model="../models/BEST_predict_T_add_s_outer",
          prep_with="../models/BEST_predict_v_v4"),
     # our two-stage reproduction, chained through our own step 1
@@ -80,7 +80,7 @@ RUNS = [
     #dict(label="e2e: no BN, blur",     run="../runs/good_fines/finetune_e2e_nobn_blur_lr_schedule"),
     #dict(label="e2e: lr sched only",   run="../runs/good_fines/finetune_lr_schedule"),
     #dict(label="e2e: no BN, lr sched only",   run="../runs/good_fines/finetune_e2e_lr_schedule_no_bn_restimate"),
-    dict(label="e2e: no BN, lr sched only",   run="../runs/good_fines/finetune_e2e_long_lr_nobn"),
+    dict(label="End-to-End",   run="../runs/good_fines/finetune_e2e_long_lr_nobn"),
     
 ]
 
