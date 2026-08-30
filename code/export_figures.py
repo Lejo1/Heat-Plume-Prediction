@@ -276,7 +276,7 @@ def apply_shared_scales(all_fields: dict) -> int:
     for d in all_fields.values():
         for key, dv in d.items():
             g = _scale_group(key)
-            lo, hi = float(np.min(dv.data)), float(np.max(dv.data))
+            lo, hi = float(dv.data.min()), float(dv.data.max())   # .min() works for torch and numpy
             if g in ranges:
                 ranges[g] = (min(ranges[g][0], lo), max(ranges[g][1], hi))
             else:
