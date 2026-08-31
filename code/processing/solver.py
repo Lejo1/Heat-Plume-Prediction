@@ -41,6 +41,10 @@ class Solver(object):
             self.model.apply(weights_init)
         
         self.metrics: dict = {"Huber": HuberLoss(), }
+        # bookkeeping for clip_grad_norm: how often it actually engaged, and the largest pre-clip
+        # norm seen. Reported by clip_report() so a run can say whether clipping mattered at all.
+        self.clip_stats = {"steps": 0, "clipped": 0, "max_norm": 0.0,
+                           "nonfinite_steps": 0, "nonfinite_tensors": 0}
 
     def train(self, args: dict):
         manual_seed(0)
@@ -175,10 +179,22 @@ class Solver(object):
                 if self.clip_grad_norm is not None:
                     # zero out non-finite entries first: clip_grad_norm_ with an inf total norm
                     # would scale by 0 and turn inf entries into NaN (inf * 0), poisoning the weights
+                    n_nonfinite = 0
                     for p in self.model.parameters():
-                        if p.grad is not None:
+                        if p.grad is not None and not torch.isfinite(p.grad).all():
+                            n_nonfinite += 1
                             torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
-                    clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
+                    # clip_grad_norm_ returns the PRE-clip total norm, so this accounting is free.
+                    # Without it there is no way to tell whether clipping ever engaged: the
+                    # pipeline tap only samples every N steps and would miss a rare spike.
+                    total_norm = float(clip_grad_norm_(self.model.parameters(), self.clip_grad_norm))
+                    self.clip_stats["steps"] += 1
+                    self.clip_stats["max_norm"] = max(self.clip_stats["max_norm"], total_norm)
+                    if total_norm > self.clip_grad_norm:
+                        self.clip_stats["clipped"] += 1
+                    if n_nonfinite:
+                        self.clip_stats["nonfinite_steps"] += 1
+                        self.clip_stats["nonfinite_tensors"] += n_nonfinite
                 if self.opt.__class__.__name__ == "LBFGS":
                     self.opt.step(closure)
                 else:
@@ -193,6 +209,22 @@ class Solver(object):
             metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
 
         return epoch_loss, metric_values
+
+    def clip_report(self) -> str:
+        """One line on whether gradient clipping did anything this run."""
+        c = self.clip_stats
+        if not c["steps"]:
+            return "gradient clipping: off"
+        pct = c["clipped"] / c["steps"] * 100
+        msg = (f"gradient clipping (threshold {self.clip_grad_norm}): engaged on "
+               f"{c['clipped']}/{c['steps']} steps ({pct:.1f}%), largest pre-clip norm "
+               f"{c['max_norm']:.3e}")
+        if c["nonfinite_steps"]:
+            msg += (f"; non-finite gradients sanitized on {c['nonfinite_steps']} step(s), "
+                    f"{c['nonfinite_tensors']} tensor(s)")
+        else:
+            msg += "; no non-finite gradients"
+        return msg
 
     def save_lr_schedule(self, path: str):
         """ save learning rate history to csv file"""

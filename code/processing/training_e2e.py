@@ -257,6 +257,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
             logging.warning(f"Manually stopping training early with best model found in epoch {solver.best_model_params['epoch']}.")
         finally:
             solver.save_lr_schedule(args["destination"] / "learning_rate_history_stage2.csv")
+            print(solver.clip_report())
             print("Training finished")
 
         training_time = datetime.now() - training_time
