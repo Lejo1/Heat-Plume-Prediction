@@ -3,6 +3,7 @@ import torch
 from typing import List
 from pathlib import Path
 
+from preprocessing import subdomain
 from preprocessing.datasets.dataset import DatasetBasis
 from utils.utils_args import get_run_ids_from_prep
 
@@ -18,8 +19,8 @@ class SimulationDatasetCuts(DatasetBasis):
         self.inputs = []
         self.labels = []
         for run_id in run_ids:
-            self.inputs.append(torch.load(self.path / "Inputs" / f"RUN_{run_id}.pt"))
-            self.labels.append(torch.load(self.path / "Labels" / f"RUN_{run_id}.pt"))
+            self.inputs.append(subdomain.crop(torch.load(self.path / "Inputs" / f"RUN_{run_id}.pt")))
+            self.labels.append(subdomain.crop(torch.load(self.path / "Labels" / f"RUN_{run_id}.pt")))
         self.inputs = torch.stack(self.inputs)
         self.labels = torch.stack(self.labels)
         # switch dim D and channels

@@ -39,6 +39,7 @@ from postprocessing.visualization import (DataToVisualize, plot_datafields, prep
                                           reverse_norm_one_dp)
 from torch.utils.data import DataLoader
 
+from preprocessing import subdomain
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
@@ -93,6 +94,10 @@ MAKE_COMPARISON_PLOTS = True         # bar charts from the metric yaml files - c
 BUILD_MISSING_PREPS = True           # generate a step-2 dataset when it is not on disk (slow!)
 COMPUTE_MISSING_METRICS = True       # run eval_metrics when a metrics file is not on disk
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# Restrict every field to the hardcoded debug window (preprocessing/subdomain.py) instead of the
+# full 2560^2 domain. Set it to whatever the runs being exported were trained with - a windowed
+# model evaluated on the full field, or the reverse, produces meaningless numbers.
+SUBDOMAIN = False
 SPLIT_INDEX = 2                      # index into order_data: 0=train, 1=val, 2=test
 DPI = 300                            # Pelzer used 1200; 300 keeps the files manageable
 PIC_FORMAT = "png"                   # "pdf" for vector figures in the thesis
@@ -449,6 +454,8 @@ def comparison_plots():
 
 
 if __name__ == "__main__":
+    subdomain.enable(SUBDOMAIN)
+    print(subdomain.describe())
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for e in RUNS:
         assert ("run" in e) ^ ("model" in e), f"{e['label']}: give either run= or model=+prep_with="

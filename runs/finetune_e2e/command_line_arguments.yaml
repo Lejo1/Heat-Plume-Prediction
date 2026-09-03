@@ -4,6 +4,9 @@ data_prep:
 data_raw: ../datasets/dataset_giant_100hp_varyK
 destination:
 device: cuda
+subdomain: false   # true = train/val/test on one hardcoded 736^2 window instead of the full 2560^2
+                   # field (12x cheaper, for debugging). See preprocessing/subdomain.py.
+                   # Losses and metrics of a windowed run are not comparable to full-domain ones.
 
 # --- where the two baselines come from -------------------------------------------------------
 # Instead of one end-to-end checkpoint (model:), CNN1 and CNN2 are seeded from the two separately

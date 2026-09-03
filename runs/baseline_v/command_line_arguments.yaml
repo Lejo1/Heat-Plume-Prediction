@@ -27,5 +27,7 @@ outputs: xy
 repeat_inner: false
 skip_per_dir: 16
 stride: 1
+subdomain: false   # true = train/val/test on one hardcoded 736^2 window instead of the full 2560^2
+                   # field, for debugging. See preprocessing/subdomain.py.
 train_loss: MSE
 visualize: false

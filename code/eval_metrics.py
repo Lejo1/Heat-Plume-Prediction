@@ -7,6 +7,7 @@ import numpy as np
 from copy import deepcopy
 
 from utils.utils_args import load_yaml, save_yaml
+from preprocessing import subdomain
 from preprocessing.data_init import init_data
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.unetVariants import UNetNoPad2, UNet
@@ -393,7 +394,12 @@ if __name__=="__main__":
                         default=Path("../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45"))
     parser.add_argument("--destination", type=Path, default=None, help="default: the model directory")
     parser.add_argument("--scaling", action="store_true", help="evaluate on the scaling test data")
+    parser.add_argument("--subdomain", action="store_true",
+                        help="evaluate on the hardcoded sub-window only (preprocessing/subdomain.py); "
+                             "match this to the run's own subdomain: setting")
     cli = parser.parse_args()
+    subdomain.enable(cli.subdomain)
+    print(subdomain.describe())
     PATH_PREP_DATA = cli.data
     PATH_MODEL = cli.model
     PATH_DESTINATION = cli.destination or PATH_MODEL

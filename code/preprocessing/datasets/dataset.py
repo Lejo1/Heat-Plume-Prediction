@@ -4,6 +4,7 @@ import torch
 import yaml
 from torch.utils.data import Dataset
 
+from preprocessing import subdomain
 from preprocessing.transforms import NormalizeTransform
 from utils.utils_args import get_run_ids_from_prep
 
@@ -21,7 +22,7 @@ class DatasetBasis(Dataset):
             self.label_names.append(filename)
         self.input_names.sort()
         self.label_names.sort()
-        self.spatial_size = torch.load(self.path / "Labels" / self.input_names[0]).shape[1:]
+        self.spatial_size = subdomain.crop(torch.load(self.path / "Labels" / self.input_names[0])).shape[1:]
         if box_size is not None:
             self.box_size = box_size
         else:
@@ -48,8 +49,8 @@ class DatasetBasis(Dataset):
         return len(self.input_names)
     
     def __getitem__(self, idx):
-        input = torch.load(self.path / "Inputs" / self.input_names[idx])[:, :self.box_size, :]
-        label = torch.load(self.path / "Labels" / self.label_names[idx])[:, :self.box_size, :]
+        input = subdomain.crop(torch.load(self.path / "Inputs" / self.input_names[idx]))[:, :self.box_size, :]
+        label = subdomain.crop(torch.load(self.path / "Labels" / self.label_names[idx]))[:, :self.box_size, :]
         return input, label
 
 class DataPoint(DatasetBasis):
@@ -102,7 +103,7 @@ class DataPointE2E(Dataset):
         return len(self.input_names)
 
     def __getitem__(self, idx):
-        input = torch.load(self.path_v / "Inputs" / self.input_names[idx])
-        label_T = torch.load(self.path_T / "Labels" / self.label_names[idx])
-        label_v = torch.load(self.path_v / "Labels" / self.label_names[idx])
+        input = subdomain.crop(torch.load(self.path_v / "Inputs" / self.input_names[idx]))
+        label_T = subdomain.crop(torch.load(self.path_T / "Labels" / self.label_names[idx]))
+        label_v = subdomain.crop(torch.load(self.path_v / "Labels" / self.label_names[idx]))
         return input, torch.cat([label_T, label_v])

@@ -4,7 +4,10 @@ data_prep:
 data_raw: ../datasets/dataset_giant_100hp_varyK
 destination:
 device: cuda
-epochs: 500        # stage 2 (joint full-pipeline training; 1 optimizer step per epoch and datapoint)
+subdomain: false   # true = train/val/test on one hardcoded 736^2 window instead of the full 2560^2
+                   # field (12x cheaper, for debugging). See preprocessing/subdomain.py.
+                   # Losses and metrics of a windowed run are not comparable to full-domain ones.
+epochs: 500       # stage 2 (joint full-pipeline training; 1 optimizer step per epoch and datapoint)
 # model_v: seed CNN1 from an existing step-1 run instead of running stage 1 here (null = off).
 # Pins step 1 across experiments, which matters: the paper reports +-20% run-to-run spread on the
 # step-1 test MAE, so an unpinned CNN1 makes e2e runs incomparable to each other.
