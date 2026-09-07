@@ -55,7 +55,7 @@ lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_st
 clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
 lambda_v: 0.01     # small MSE(v) term anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
 detach_direct_v: false  # keep CNN2's direct vx/vy channels live - that is how baseline_T was trained; true only to force all signal through the streamlines
-detach_trajectory: false  # truncate the streamline gradient: each RK4 step blames only the velocity it sampled, no chain back along the line
+detach_trajectory: true  # truncate the streamline gradient: each RK4 step blames only the velocity it sampled, no chain back along the line
 compile: true      # torch.compile the RK4 step; falls back to eager on failure
 stage1_force: false
 bn_reestimate: false  # recompute BatchNorm running stats on full-domain inputs before stage 2 (both baselines were trained on 256^2 patches); weights unchanged

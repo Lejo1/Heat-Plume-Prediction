@@ -32,7 +32,7 @@ clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the str
 lambda_v: 0.01    # pure T loss in stage 2 (stage-1 pretraining supplies the physical velocities); >0 re-enables MSE(T) + lambda_v * MSE(v)
 compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure
 detach_direct_v: false  # stop-gradient on CNN2's direct vx/vy channels -> CNN1's T-loss signal flows only through the streamlines
-detach_trajectory: false  # truncate the streamline gradient: each RK4 step blames only the velocity it sampled, no chain back along the line
+detach_trajectory: true  # truncate the streamline gradient: each RK4 step blames only the velocity it sampled, no chain back along the line
 stage1_force: false    # true = retrain stage 1 even if a cached unet_v_pretrained.pt exists
 bn_reestimate: false   # after stage 1, recompute BatchNorm running stats on full-domain inputs (stage 1 trains CNN1 on 256^2 patches, stage 2 is full-domain); weights unchanged
 grad_diag: true       # after stage 1, decompose CNN1's gradient into streamline vs direct routes + save a plot
