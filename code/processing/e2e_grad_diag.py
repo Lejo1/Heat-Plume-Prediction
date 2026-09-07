@@ -74,7 +74,8 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
     occs = trace_and_draw_soft(hp_positions, v_trace[0, 0], v_trace[0, 1], (h, w),
                                offsets=M.offsets, randomK_data=M.randomK_data, faded=True,
                                t_steps=M.t_steps, sigma=M.sigma, use_compile=M.use_compile,
-                               fade_mode=M.fade_mode)
+                               fade_mode=M.fade_mode,
+                               detach_trajectory=getattr(M, "detach_trajectory", False))
     sf = occs[0].unsqueeze(0).unsqueeze(0)
     sf_outer = (sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0])).unsqueeze(0).unsqueeze(0)
 

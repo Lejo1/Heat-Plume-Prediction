@@ -27,7 +27,7 @@ class LGCNNEndToEnd(Model):
     def __init__(self, v_stats: dict, unet_args: dict, randomK_data: bool = False,
                  t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False,
                  fade_mode: str = "absolute", detach_direct_v: bool = False, unet_args_T: dict = None,
-                 v_blur: float = 0.0):
+                 v_blur: float = 0.0, detach_trajectory: bool = False):
         """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy).
 
         unet_args_T defaults to unet_args; pass it when CNN2 must differ architecturally from CNN1,
@@ -59,6 +59,9 @@ class LGCNNEndToEnd(Model):
         # from the config again at inference time.
         self.v_blur = float(v_blur)
         self.detach_direct_v = detach_direct_v  # stop-gradient on CNN2's direct v channels (see forward)
+        # stop-gradient across RK4 steps: dL/dv then blames only the velocity each step sampled,
+        # instead of chaining back along the whole line (see calc_streamlines)
+        self.detach_trajectory = detach_trajectory
         self.last_intermediates = {}  # detached v/streamlines of the last forward, for plots
         # set by PipelineTap for one step: keep the LIVE stage tensors and retain their .grad, so a
         # single backward yields every stage's input/output *and* the loss gradient on both sides
@@ -141,7 +144,8 @@ class LGCNNEndToEnd(Model):
             occs = trace_and_draw_soft(hp_positions, v_trace[b, 0], v_trace[b, 1], (h, w),
                                        offsets=self.offsets, randomK_data=self.randomK_data,
                                        faded=True, t_steps=self.t_steps, sigma=self.sigma,
-                                       use_compile=self.use_compile, fade_mode=self.fade_mode)
+                                       use_compile=self.use_compile, fade_mode=self.fade_mode,
+                                       detach_trajectory=self.detach_trajectory)
             sf.append(occs[0])
             sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
         sf = self._tap("sf", torch.stack(sf).unsqueeze(1))          # [B, 1, h, w], streamline output

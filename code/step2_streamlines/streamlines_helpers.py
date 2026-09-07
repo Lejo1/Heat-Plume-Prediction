@@ -102,12 +102,14 @@ def get_rk4_step(use_compile:bool):
             return rk4_step
     return _rk4_step_compiled
 
-def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=10_000, max_step_cells=0.5, use_compile:bool=False):
+def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=10_000, max_step_cells=0.5,
+                     use_compile:bool=False, detach_trajectory:bool=False):
     # Solve for all start points at once with fixed-step RK4. The step count is chosen so that
     # no point moves more than max_step_cells per step; the coarse solution is then linearly
     # upsampled to t_steps samples for drawing.
     # Differentiable: gradients flow through the RK4 steps and the bilinear velocity sampling
     # (wrap calls in torch.no_grad() when gradients are not needed, it is much faster).
+    # detach_trajectory: cut the gradient's cross-step recurrence, see the loop below.
     global _compile_failed
     x = torch.as_tensor(start_points, dtype=velocity.dtype).clone()  # dtype follows the velocity grid
     v_max = float(velocity.detach().norm(dim=0).max())  # only picks the step count, no gradient needed
@@ -122,6 +124,19 @@ def calc_streamlines(start_points, velocity, maxs_xy, t_end=27.5, t_steps=10_000
     trajectory = torch.empty((x.shape[0], n_int+1, 2), dtype=x.dtype, device=x.device)
     trajectory[:,0] = x
     for i in range(n_int):
+        if detach_trajectory:
+            # Truncated ("local") gradient: x_{n+1} = x_n + dt/6(k1+..) depends on x_n both through
+            # the carried term and through v(x_n), so backprop otherwise multiplies
+            # dx_{n+1}/dx_n = I + dt*J(x_n) all the way back to the seed (the ODE's adjoint
+            # equation) - a perturbation at the tip is felt over the whole line. Detaching the
+            # carried position stops the gradient at the step boundary, so each step's dL/dv blames
+            # only the velocity that step sampled.
+            # The step function itself is unchanged, which is the point: inside it k1 = v(x) now has
+            # no path back to an earlier position, while k2 = v(x + dt/2*k1) keeps its stage term.
+            # So the single-step derivative w.r.t. v stays exact and only the recurrence is cut -
+            # and the torch.compile cache needs no second variant.
+            # Values are untouched, so the forward pass is bit-identical either way.
+            x = x.detach()
         try:
             x = step_fn(x, velocity, dt_arg)
         except Exception as e:
@@ -289,7 +304,7 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
 
 def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
                         faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False,
-                        fade_mode:str="absolute", method:str="auto"):
+                        fade_mode:str="absolute", method:str="auto", detach_trajectory:bool=False):
     # Differentiable forward pass of step 2: trace streamlines for all offsets in one batch and
     # rasterize each offset group to a soft-occupancy image (one image per offset).
     # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
@@ -304,7 +319,8 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
     starts = torch.cat([hp_positions + torch.tensor([0., float(o)], device=device) for o in offsets])
 
     velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
-    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps, use_compile=use_compile)
+    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps,
+                                   use_compile=use_compile, detach_trajectory=detach_trajectory)
     return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma,
                                   fade_mode=fade_mode, method=method)
             for i in range(len(offsets))]

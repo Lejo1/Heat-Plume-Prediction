@@ -243,6 +243,7 @@ def fields_e2e(run_dir: Path, at_start: bool = False):
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
                           fade_mode=args.get("fade_mode", "absolute"),
                           detach_direct_v=args.get("detach_direct_v", False),
+                          detach_trajectory=args.get("detach_trajectory", False),
                           v_blur=args.get("v_blur", 0.0) or 0.0).float()
     if at_start:
         assert args.get("model_v") and args.get("model_T"), \

@@ -49,7 +49,8 @@ if __name__ == "__main__":
                           randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
                           use_compile=args.get("compile", False),
                           fade_mode=args.get("fade_mode", "absolute"),
-                          detach_direct_v=args.get("detach_direct_v", False)).float()
+                          detach_direct_v=args.get("detach_direct_v", False),
+                          detach_trajectory=args.get("detach_trajectory", False)).float()
     model.load(args["destination"], args["device"])
     model.eval()
 

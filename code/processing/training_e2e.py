@@ -58,8 +58,14 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                           use_compile=args.get("compile", False),
                           fade_mode=args.get("fade_mode", "absolute"),
                           detach_direct_v=args.get("detach_direct_v", False),
+                          detach_trajectory=args.get("detach_trajectory", False),
                           v_blur=args.get("v_blur", 0.0) or 0.0).float()
     model.to(args["device"])
+    if model.detach_trajectory:
+        print("detach_trajectory ON: streamline gradient truncated at each RK4 step - dL/dv blames\n"
+              "  only the velocity each step sampled, not the whole upstream line. Its norm is far\n"
+              "  below the full-adjoint one; Adam rescales per-parameter, but consider raising\n"
+              "  lr_stage2 for a like-for-like comparison. grad_diag reports the actual route-S norm.")
 
     if args["case"] in ["test", "finetune"]:
         # two sources of weights: either one end-to-end checkpoint (model:) or the two separately

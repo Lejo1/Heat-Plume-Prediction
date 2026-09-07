@@ -125,7 +125,8 @@ class PipelineTap:
     # ---------------------------------------------------------------- scalars
     def _scalars(self, model, tap, grads, loss) -> Dict[str, float]:
         s = {"step": self.step, "loss": float(loss.detach()),
-             "detach_direct_v": float(bool(getattr(model, "detach_direct_v", False)))}
+             "detach_direct_v": float(bool(getattr(model, "detach_direct_v", False))),
+             "detach_trajectory": float(bool(getattr(model, "detach_trajectory", False)))}
         for name in ("x", "v_norm", "v_phys", "sf", "sf_outer", "x_T", "T_pred"):
             raw, san = _norms(grads.get(name))
             s[f"grad_{name}"] = san
@@ -287,7 +288,8 @@ class PipelineTap:
         lines += ["", "parameter gradients", "-" * 46,
                   f"  ||dL/dtheta|| CNN1        {stats.get('grad_params_cnn1', float('nan')):.3e}",
                   f"  ||dL/dtheta|| CNN2        {stats.get('grad_params_cnn2', float('nan')):.3e}",
-                  "", f"  detach_direct_v: {bool(stats.get('detach_direct_v', 0.0))}"]
+                  "", f"  detach_direct_v: {bool(stats.get('detach_direct_v', 0.0))}",
+                  f"  detach_trajectory: {bool(stats.get('detach_trajectory', 0.0))}"]
         exploded = [k.replace("grad_", "").replace("_raw_nonfinite", "")
                     for k, v in stats.items() if k.endswith("_raw_nonfinite") and v]
         if exploded:
