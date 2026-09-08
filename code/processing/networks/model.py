@@ -13,8 +13,12 @@ class Model(nn.Module):
 
     def infer(self, data, device:str = "cpu"):
         self.eval()
-        torch.set_grad_enabled(False)  # Disable gradient computation for testing
-        return self(data.to(device)).detach()
+        # no_grad is SCOPED, torch.set_grad_enabled(False) was not: it stayed off for the whole
+        # process afterwards. Solver.train's KeyboardInterrupt handler reaches this through
+        # visualizations(), and training CONTINUES after it - so an interrupted run silently
+        # carried on with autograd disabled.
+        with torch.no_grad():
+            return self(data.to(device))
 
     def save(self, path:Path, model_name: str = "model.pt"):
         torch.save(self.state_dict(), path/model_name)
