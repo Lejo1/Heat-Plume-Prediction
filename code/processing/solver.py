@@ -16,6 +16,23 @@ from postprocessing.visualization import visualizations
 from processing.networks.model import weights_init
 from utils.utils_args import save_yaml
 
+def _snapshot(obj):
+    """Deep copy of a state_dict with every tensor detached, cloned and moved to the CPU.
+
+    `Module.state_dict()` and `Optimizer.state_dict()` both hand back the LIVE tensors, not copies.
+    Storing them as a "best model so far" therefore only stores an alias: the optimizer keeps
+    mutating them in place, and loading them back later is a no-op. Cloning to the CPU makes the
+    snapshot real and keeps it off the GPU, where the streamline graph needs every byte.
+    """
+    if torch.is_tensor(obj):
+        return obj.detach().cpu().clone()
+    if isinstance(obj, dict):
+        return {k: _snapshot(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_snapshot(v) for v in obj)
+    return obj  # ints, floats, strings: immutable, safe to share
+
+
 @dataclass
 class Solver(object):
     model: Module
@@ -99,13 +116,16 @@ class Solver(object):
                                 
                 # Keep best model
                 if self.best_model_params is None or val_epoch_loss < self.best_model_params["loss"]:
+                    # _snapshot, not the raw state_dict: both state_dicts alias the live tensors, so
+                    # without a copy this records only a reference that training keeps overwriting -
+                    # "best model" would silently become "last model" and the load_state_dict at the
+                    # end of this function a no-op.
                     self.best_model_params = {
                         "epoch": epoch,
                         "loss": val_epoch_loss,
                         "train loss": train_epoch_loss,
-                        "state_dict": self.model.state_dict(),
-                        "optimizer": self.opt.state_dict(),
-                        "parameters": self.model.parameters(),
+                        "state_dict": _snapshot(self.model.state_dict()),
+                        "optimizer": _snapshot(self.opt.state_dict()),
                         "training time in sec": (time.perf_counter() - start_time),
                     }
 
