@@ -172,7 +172,20 @@ def draw_streamlines(image_data:torch.Tensor, streamlines:list, faded:bool=False
     print("Time for drawing streamlines: ", datetime.now()-time, " seconds")
     return image_data
 
-SIGMA_BLUR_MIN = 1.0  # at/above this sigma "auto" drawing switches from the splat to the blur path
+# At/above this sigma "auto" drawing switches from the splat to the blur path.
+# Raised from 1.0 to 1.5 so the PRODUCTION sigma=1.0 takes the splat path: with the +-4 sigma window
+# below, splat's gradient w.r.t. lateral line position is ~230x smoother than blur's (p99 jump per
+# 0.02 cell: 0.2% of peak vs 45%). See check_drawing_gradient.py. Blur's roughness is intrinsic -
+# _scatter_bilinear's piecewise-linear weights give a piecewise-constant derivative that jumps at
+# every cell boundary - so no window fixes it; blur is kept for larger sigma, where splat's
+# window^2 memory is what made a 24 GB card OOM in the first place.
+SIGMA_BLUR_MIN = 1.5
+# Half-width of the drawing kernel, in units of sigma. 2.0 truncated the Gaussian where it is still
+# 13.5% of its peak, and that truncation - not the sub-cell kernel - was the source of the splat
+# path's gradient staircase. 4.0 cuts at 0.03% and costs (8 sigma + 1)^2 cells per sample instead of
+# (4 sigma + 1)^2: 81 vs 25 at sigma=1. It also changes the forward slightly (+2.6% total occupancy
+# at sigma=1), because less of the Gaussian is thrown away.
+KERNEL_HALF_WIDTHS = 4.0
 
 def _scatter_bilinear(density, x, y, amp, dims):
     # Deposit each sample's mass `amp` on the 4 cell centers surrounding it (centers sit at integer
@@ -247,21 +260,27 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     #
     # Two ways to rasterize the same field, selected by `method`:
     #  "splat": evaluate the Gaussian at every cell of each sample's window x window neighborhood.
-    #      Exact, but allocates n_samples x window^2 = n_samples x (4 sigma + 1)^2 entries per line
+    #      Exact, but allocates n_samples x window^2 = n_samples x (8 sigma + 1)^2 entries per line
     #      and *keeps them in the autograd graph* -> memory grows quadratically in sigma and runs a
-    #      24 GB card out of memory around sigma >~ 4 on full-domain data.
+    #      24 GB card out of memory for large sigma on full-domain data. Its gradient w.r.t. sample
+    #      position is smooth, because the Gaussian is evaluated at the true sub-cell distance.
     #  "blur": a Gaussian splat is a point mass convolved with a Gaussian, so scatter each sample
     #      bilinearly (4 cells) and convolve the accumulated density once, separably. Memory per
     #      sample is constant in sigma and the convolution is one cheap pass over the grid; the
     #      backward is again a convolution. Gradients w.r.t. sample position flow through the
     #      bilinear weights and are then smoothed by the blur.
-    #  "auto" (default): "blur" from sigma >= SIGMA_BLUR_MIN, "splat" below, where the splat path is
-    #      cheap and its exact sub-cell kernel still matters relative to the blob size.
+    #      Its gradient, by contrast, is a staircase: bilinear weights are piecewise LINEAR in
+    #      position, so their derivative is piecewise CONSTANT and jumps at every cell boundary,
+    #      and the Gaussian afterwards smooths the field in space but not its dependence on
+    #      position. Widening the window does not help; fixing it needs a B-spline deposition.
+    #  "auto" (default): "blur" from sigma >= SIGMA_BLUR_MIN, "splat" below - so the production
+    #      sigma=1.0 gets splat's much smoother gradient, and only the memory-hungry large sigma
+    #      pays blur's roughness. See check_drawing_gradient.py for the measurements.
     # Bilinear deposition is itself a convolution with a triangular kernel of variance 1/6 per axis,
     # so the blur uses sqrt(sigma^2 - 1/6) to land on total width sigma - the two paths then agree
     # to well under a percent across the switch (the correction is 0.008% at sigma=10).
     if window is None:
-        window = 2*int(np.ceil(2*sigma)) + 1  # cover +-2 sigma
+        window = 2*int(np.ceil(KERNEL_HALF_WIDTHS*sigma)) + 1  # cover +-KERNEL_HALF_WIDTHS sigma
     use_blur = method == "blur" or (method == "auto" and sigma >= SIGMA_BLUR_MIN)
     if method not in ("auto", "blur", "splat"):
         raise ValueError(f"unknown drawing method {method!r} (expected 'auto', 'blur' or 'splat')")
