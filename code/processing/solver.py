@@ -162,12 +162,18 @@ class Solver(object):
             # tensors while the graph is built); it only observes, the step itself is unchanged
             armed = self.pipeline_tap.arm(self.model, x) if (self.pipeline_tap is not None and self.model.training) else False
 
-            y_pred = self.model(x)
-            required_size = y_pred.shape[2:]
-            start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
-            y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
+            # Only the training half ever calls backward (below), so on the validation pass the
+            # autograd graph is built and thrown away unused. For the full-domain end-to-end model
+            # that graph is several GiB of streamline + UNet activations, allocated and freed on
+            # every validation epoch - enough to fragment the CUDA pool and OOM the NEXT training
+            # step. set_grad_enabled keeps training byte-identical and skips the graph otherwise.
+            with torch.set_grad_enabled(self.model.training):
+                y_pred = self.model(x)
+                required_size = y_pred.shape[2:]
+                start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
+                y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
 
-            loss = self.loss_func(y_pred, y_reduced)
+                loss = self.loss_func(y_pred, y_reduced)
 
             if self.model.training:
                 loss.backward()
@@ -203,10 +209,11 @@ class Solver(object):
             epoch_loss += loss.detach().item()
         epoch_loss /= len(dataloader)
 
-        # Calculate metrics
+        # Calculate metrics (same reasoning: the result is read out as a number, so no graph)
         metric_values = {}
-        for metric_name, metric in self.metrics.items():
-            metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
+        with torch.no_grad():
+            for metric_name, metric in self.metrics.items():
+                metric_values[metric_name] = metric(y_pred, y_reduced).item()
 
         return epoch_loss, metric_values
 
