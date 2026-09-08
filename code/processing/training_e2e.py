@@ -205,6 +205,9 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         from processing.e2e_grad_diag import diagnose_e2e_gradients
         x0, y0 = next(iter(dataloaders["train"]))
         diagnose_e2e_gradients(model, x0, y0, args, plot_path=args["destination"] / "grad_diag_stage2_start.png")
+        # the diagnostic's full-domain sample is host memory (diagnose_e2e_gradients copies it to
+        # the device internally), but it would otherwise stay alive for the whole of stage 2
+        del x0, y0
         if args.get("grad_diag_only", False):
             return model
 
