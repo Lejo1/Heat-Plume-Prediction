@@ -22,21 +22,27 @@ class CombiLoss(nn.Module):
 
 class E2ELoss(nn.Module):
     """
-    Loss for the end-to-end LGCNN: MSE(T) + lambda_v * MSE(v).
+    Loss for the end-to-end LGCNN: L(T) + lambda_v * L(v), with L = MSE, MAE or Huber (`base`).
     Predictions and labels carry 3 channels [T, vx, vy] (normalized units, comparable scales).
     lambda_v = 0 recovers the pure temperature loss.
+    Huber keeps PyTorch's delta=1.0: normalized errors are ~1e-2, so it stays in its quadratic
+    branch, where it equals 0.5 * MSE.
     """
-    def __init__(self, lambda_v: float = 0.5):
+    BASES = {"mse": nn.MSELoss, "mae": nn.L1Loss, "huber": nn.HuberLoss}
+
+    def __init__(self, lambda_v: float = 0.5, base: str = "mse"):
         super(E2ELoss, self).__init__()
-        self.mse = nn.MSELoss()
+        if base.lower() not in self.BASES:
+            raise ValueError(f"E2ELoss base must be one of {list(self.BASES)}, got {base!r}")
+        self.fn = self.BASES[base.lower()]()
         self.lambda_v = lambda_v
-        self.name = rf"E2ELoss (lambda_v={lambda_v})"
+        self.name = rf"E2ELoss ({base.upper()}, lambda_v={lambda_v})"
 
     def forward(self, predictions, labels):
-        loss_T = self.mse(predictions[:, 0:1], labels[:, 0:1])
+        loss_T = self.fn(predictions[:, 0:1], labels[:, 0:1])
         if self.lambda_v == 0:
             return loss_T
-        return loss_T + self.lambda_v * self.mse(predictions[:, 1:3], labels[:, 1:3])
+        return loss_T + self.lambda_v * self.fn(predictions[:, 1:3], labels[:, 1:3])
     
 
 class SSIMLoss(nn.Module):

@@ -56,7 +56,10 @@ lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_st
   0: 0.0001          # 1e-4 for the first 100 epochs - deliberately 10x the tuned rate, to push the
   100: 0.00001       # loaded baselines off their optimum, then back to CNN2's tuned 1e-5
 clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
-lambda_v: 0.01     # small MSE(v) term anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+lambda_v: 0.01     # small velocity term (same loss type as T) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+val_loss: Huber    # validation loss, also selects the best epoch: MSE | MAE | Huber (delta 1.0), in the
+                   # same E2ELoss form as train_loss (HPS_options). Unset = same as the training loss.
+val_loss_with_v: false  # true = Huber(T) + lambda_v * Huber(v), false = Huber(T) only
 detach_direct_v: true   # route D OFF: with it on, detach_trajectory pushes the streamline route
                         # to ~1% of CNN1's gradient and the run measures the direct bypass instead
                         # (that is what drifted v to 36/55 m/y). Off => route S is 100%.

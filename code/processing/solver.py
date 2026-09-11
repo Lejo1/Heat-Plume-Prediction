@@ -48,8 +48,11 @@ class Solver(object):
     clip_grad_norm: float = None  # cap on the global gradient L2 norm, e.g. 1.0 for end-to-end training (exploding gradients through the streamlines); None = off
     pipeline_tap: object = None  # optional PipelineTap: every N steps, plot each stage's in/out + the loss gradients around it
     epoch_callback: object = None  # optional fn(epoch) run at the start of each epoch, e.g. the v_blur annealing schedule
+    val_loss_func: modules.loss._Loss = None  # loss of the validation pass, which also selects the best epoch; None = loss_func
 
     def __post_init__(self):
+        if self.val_loss_func is None:
+            self.val_loss_func = self.loss_func
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
         # contains the epoch and learning rate, when lr changes
         self.lr_schedule = {0: self.opt.param_groups[0]["lr"]}
@@ -57,6 +60,8 @@ class Solver(object):
         if not self.finetune:
             self.model.apply(weights_init)
         
+        # logged as "train/val Huber": plain Huber over ALL output channels (e2e: T, vx, vy weighted
+        # equally) of the LAST batch of each pass - independent of loss_func / val_loss_func
         self.metrics: dict = {"Huber": HuberLoss(), }
         # bookkeeping for clip_grad_norm: how often it actually engaged, and the largest pre-clip
         # norm seen. Reported by clip_report() so a run can say whether clipping mattered at all.
@@ -98,7 +103,7 @@ class Solver(object):
                 
                 # Validation
                 self.model.eval()
-                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device, self.val_loss_func)
                 if False: # realK
                     val_epoch_loss = other_losses_val["Huber"] # TODO for realK
 
@@ -156,7 +161,9 @@ class Solver(object):
 
         return self.best_model_params["loss"]
 
-    def run_epoch(self, dataloader: DataLoader, device: str):
+    def run_epoch(self, dataloader: DataLoader, device: str, loss_func: modules.loss._Loss = None):
+        if loss_func is None:
+            loss_func = self.loss_func
         epoch_loss = 0.0
         for x, y in dataloader:
             x = x.to(device)
@@ -193,7 +200,7 @@ class Solver(object):
                 start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
                 y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
 
-                loss = self.loss_func(y_pred, y_reduced)
+                loss = loss_func(y_pred, y_reduced)
 
             if self.model.training:
                 loss.backward()
@@ -277,7 +284,7 @@ class Solver(object):
 
         self.model.eval()
         train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device) 
-        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device, self.val_loss_func)
 
         metrics = {}
         metrics["no_params"] = no_params

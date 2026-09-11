@@ -213,8 +213,19 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
 
     # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
     if args["case"] in ["train", "finetune"]:
-        # loss = MSE(T) + lambda_v * MSE(v); lambda_v=0 (or missing key) = pure temperature loss.
+        # loss = L(T) + lambda_v * L(v); lambda_v=0 (or missing key) = pure temperature loss.
+        # L of the training loss is train_loss (HPS_options), L of the validation loss - which also
+        # selects the best epoch - is val_loss (command_line_arguments; unset = the training loss).
+        # val_loss_with_v: false drops the velocity term from the validation loss only.
         # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
+        lambda_v = args.get("lambda_v", 0.0)
+        train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"])
+        val_loss_fct = None
+        if args.get("val_loss"):
+            val_loss_fct = E2ELoss(lambda_v=lambda_v if args.get("val_loss_with_v", True) else 0.0,
+                                   base=args["val_loss"])
+        print(f"STAGE 2 losses: train {train_loss_fct.name}, "
+              f"val {(val_loss_fct if val_loss_fct is not None else train_loss_fct).name} (selects the best epoch)")
         # optional per-step pipeline diagnostic: every N optimizer steps, save each stage's
         # input/output and the loss gradients on both sides of it (pipeline_plot_every: 0 = off)
         tap = PipelineTap(every=args.get("pipeline_plot_every", 0),
@@ -233,7 +244,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         # for the lower rate again. lr_stage2 overrides `lr` for stage 2 only; unset = use `lr`.
         lr2 = float(args.get("lr_stage2") or args["lr"])
         solver = Solver(model, dataloaders["train"], dataloaders["val"],
-                        loss_func=E2ELoss(lambda_v=args.get("lambda_v", 0.0)),
+                        loss_func=train_loss_fct, val_loss_func=val_loss_fct,
                         finetune=True, learning_rate=lr2,
                         clip_grad_norm=args.get("clip_grad", 1.0),
                         pipeline_tap=tap if tap.enabled else None,

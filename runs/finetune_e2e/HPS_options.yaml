@@ -39,7 +39,8 @@ inputs:
     - pki
 train_loss:
   values:
-  - MSE
+  # e2e stage 2: base loss L of E2ELoss = L(T) + lambda_v * L(v)  (MSE | MAE | Huber)
+  - MAE
 bool_cutouts:
   values:
   - True

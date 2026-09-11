@@ -32,7 +32,10 @@ v_blur_end: 0.0           # anneal target (null = constant v_blur)
 v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
 fade_mode: absolute  # streamline fading 1 - t/t_end (cut-invariant; "per_line" = legacy paper convention)
 clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
-lambda_v: 0.01    # pure T loss in stage 2 (stage-1 pretraining supplies the physical velocities); >0 re-enables MSE(T) + lambda_v * MSE(v)
+lambda_v: 0.01     # small velocity term (same loss type as T) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+val_loss: Huber    # validation loss, also selects the best epoch: MSE | MAE | Huber (delta 1.0), in the
+                   # same E2ELoss form as train_loss (HPS_options). Unset = same as the training loss.
+val_loss_with_v: false  # true = Huber(T) + lambda_v * Huber(v), false = Huber(T) only
 compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure
 detach_direct_v: false  # stop-gradient on CNN2's direct vx/vy channels -> CNN1's T-loss signal flows only through the streamlines
 detach_trajectory: true  # truncate the streamline gradient: each RK4 step blames only the velocity it sampled, no chain back along the line
