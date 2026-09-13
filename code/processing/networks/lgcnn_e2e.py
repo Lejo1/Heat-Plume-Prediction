@@ -117,6 +117,27 @@ class LGCNNEndToEnd(Model):
             self.tapped[name] = t
         return t
 
+    def trace(self, v_phys: torch.Tensor, x_crop: torch.Tensor):
+        """Soft streamline images (sf, sf_outer), each [B, 1, h, w], from physical velocities and the
+        pki input cropped to v's size. Shared by forward and the PipelineTap's re-trace, so both run
+        the identical computation."""
+        h, w = v_phys.shape[2:]
+        # only the tracer sees the coarse-grained field; CNN2's direct v channels keep the sharp
+        # prediction, and so does the model's own v output
+        v_trace = smooth_velocity_field(v_phys, self.v_blur) if self.v_blur > 0 else v_phys
+        sf, sf_outer = [], []
+        for b in range(v_phys.shape[0]):
+            # heat pump cells: raw Material ID == 2 <=> normalized i-channel == 1
+            hp_positions = torch.nonzero(x_crop[b, self.IDX_I] == 1.0).float() + 0.5  # cell-center offset
+            occs = trace_and_draw_soft(hp_positions, v_trace[b, 0], v_trace[b, 1], (h, w),
+                                       offsets=self.offsets, randomK_data=self.randomK_data,
+                                       faded=True, t_steps=self.t_steps, sigma=self.sigma,
+                                       use_compile=self.use_compile, fade_mode=self.fade_mode,
+                                       detach_trajectory=self.detach_trajectory)
+            sf.append(occs[0])
+            sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
+        return torch.stack(sf).unsqueeze(1), torch.stack(sf_outer).unsqueeze(1)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.capture_intermediates:
             self.tapped = {}
@@ -134,22 +155,9 @@ class LGCNNEndToEnd(Model):
         # direct route shows up only in x_T's velocity channels - so tapping both decomposes the
         # two routes from a single backward pass.
         v_phys = self._tap("v_phys", v_norm * self.v_delta + self.v_min)
-        # only the tracer sees the coarse-grained field; CNN2's direct v channels keep the sharp
-        # prediction, and so does the model's own v output
-        v_trace = smooth_velocity_field(v_phys, self.v_blur) if self.v_blur > 0 else v_phys
-        sf, sf_outer = [], []
-        for b in range(x.shape[0]):
-            # heat pump cells: raw Material ID == 2 <=> normalized i-channel == 1
-            hp_positions = torch.nonzero(x_crop[b, self.IDX_I] == 1.0).float() + 0.5  # cell-center offset
-            occs = trace_and_draw_soft(hp_positions, v_trace[b, 0], v_trace[b, 1], (h, w),
-                                       offsets=self.offsets, randomK_data=self.randomK_data,
-                                       faded=True, t_steps=self.t_steps, sigma=self.sigma,
-                                       use_compile=self.use_compile, fade_mode=self.fade_mode,
-                                       detach_trajectory=self.detach_trajectory)
-            sf.append(occs[0])
-            sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
-        sf = self._tap("sf", torch.stack(sf).unsqueeze(1))          # [B, 1, h, w], streamline output
-        sf_outer = self._tap("sf_outer", torch.stack(sf_outer).unsqueeze(1))
+        sf, sf_outer = self.trace(v_phys, x_crop)
+        sf = self._tap("sf", sf)                 # [B, 1, h, w], streamline output
+        sf_outer = self._tap("sf_outer", sf_outer)
 
         # CNN2 input in the T-dataset channel order: [i, vx, vy, sf, k, sf_outer].
         # detach_direct_v cuts the gradient from CNN2's direct velocity channels back to CNN1, so
@@ -161,7 +169,9 @@ class LGCNNEndToEnd(Model):
         self.last_intermediates = {"v_norm": v_norm.detach(), "sf": sf.detach(), "sf_outer": sf_outer.detach()}
         T_pred = self._tap("T_pred", self.unet_T(x_T))  # CNN2 output
 
-        # append v center-cropped to T's size, so the auxiliary velocity loss can supervise CNN1
+        # append v center-cropped to T's size, so the auxiliary velocity loss can supervise CNN1.
+        # Tapped because only the loss consumes this crop: its .grad is the velocity-loss route.
         ht, wt = T_pred.shape[2:]
         it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2
-        return torch.cat([T_pred, v_norm[:, :, it:it+ht, jt:jt+wt]], dim=1)
+        v_out = self._tap("v_out", v_norm[:, :, it:it+ht, jt:jt+wt])
+        return torch.cat([T_pred, v_out], dim=1)
