@@ -45,7 +45,7 @@ v_loss:
   values:
   # e2e stage 2, training loss only: loss L_v of the velocity term (MSE | MAE | Huber),
   # null = same as train_loss
-  - MSE
+  - MAE
 bool_cutouts:
   values:
   - True
