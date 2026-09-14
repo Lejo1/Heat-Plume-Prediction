@@ -84,7 +84,7 @@ RUNS = [
     #dict(label="e2e: no BN, blur",     run="../runs/good_fines/finetune_e2e_nobn_blur_lr_schedule"),
     #dict(label="e2e: lr sched only",   run="../runs/good_fines/finetune_lr_schedule"),
     #dict(label="e2e: no BN, lr sched only",   run="../runs/good_fines/finetune_e2e_lr_schedule_no_bn_restimate"),
-    dict(label="End-to-End",   run="../runs/good_fines/finetune_e2e_long_lr_nobn"),
+    dict(label="End-to-End",   run="runs/finetune_e2e_blur_detach_v "),
     
 ]
 
