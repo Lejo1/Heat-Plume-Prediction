@@ -69,6 +69,8 @@ detach_trajectory: true  # THE VARIABLE UNDER TEST (supervisor's proposal): each
 compile: true      # torch.compile the RK4 step; falls back to eager on failure
 stage1_force: false
 bn_reestimate: false  # recompute BatchNorm running stats on full-domain inputs before stage 2 (both baselines were trained on 256^2 patches); weights unchanged
+freeze_bn: none       # none | v | T | both: keep the BatchNorm layers of CNN1 (v) / CNN2 (T) in eval mode during stage 2,
+                      # so their running stats stay fixed (at the bn_reestimate values if that is on); gamma/beta still train
 
 # --- diagnostics -----------------------------------------------------------------------------
 grad_diag: true        # decompose CNN1's gradient into streamline vs direct routes + save a plot

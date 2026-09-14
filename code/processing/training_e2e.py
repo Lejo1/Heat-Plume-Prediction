@@ -59,8 +59,13 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
                           fade_mode=args.get("fade_mode", "absolute"),
                           detach_direct_v=args.get("detach_direct_v", False),
                           detach_trajectory=args.get("detach_trajectory", False),
-                          v_blur=args.get("v_blur", 0.0) or 0.0).float()
+                          v_blur=args.get("v_blur", 0.0) or 0.0,
+                          freeze_bn=args.get("freeze_bn") or "none").float()
     model.to(args["device"])
+    if model.freeze_bn != "none":
+        nets = {"v": "CNN1", "T": "CNN2", "both": "CNN1 and CNN2"}[model.freeze_bn]
+        print(f"freeze_bn: {model.freeze_bn} - BatchNorm running statistics of {nets} stay fixed during stage 2 "
+              f"({'after bn_reestimate' if args.get('bn_reestimate', False) else 'baseline values'}); affine weights still train")
     if model.detach_trajectory:
         print("detach_trajectory ON: streamline gradient truncated at each RK4 step - dL/dv blames\n"
               "  only the velocity each step sampled, not the whole upstream line. Its norm is far\n"
@@ -322,6 +327,9 @@ def reestimate_bn_stats(model, dataloader, device, repeats: int = 1):
         m.reset_running_stats()
         m.momentum = None
     was_training = model.training
+    # re-estimation needs every BN layer in train mode; a freeze_bn setting applies again afterwards
+    saved_freeze = getattr(model, "freeze_bn", "none")
+    model.freeze_bn = "none"
     model.train()
     n_passes = 0
     with torch.no_grad():
@@ -331,6 +339,7 @@ def reestimate_bn_stats(model, dataloader, device, repeats: int = 1):
                 n_passes += 1
     for m, mom in zip(bns, saved_momentum):
         m.momentum = mom
+    model.freeze_bn = saved_freeze
     model.train(was_training)
     return len(bns), n_passes
 

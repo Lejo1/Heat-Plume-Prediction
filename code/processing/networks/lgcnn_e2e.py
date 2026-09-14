@@ -21,13 +21,14 @@ class LGCNNEndToEnd(Model):
     """
 
     IDX_P, IDX_K, IDX_I = 0, 1, 2  # channel order of the pki input
+    FREEZE_BN_OPTIONS = ("none", "v", "T", "both")
     # channel order of CNN2's input, matching the T-dataset info.yaml:
     # 0=Material ID, 1=vx, 2=vy, 3=Streamlines Faded, 4=Permeability, 5=Streamlines Faded Outer
 
     def __init__(self, v_stats: dict, unet_args: dict, randomK_data: bool = False,
                  t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False,
                  fade_mode: str = "absolute", detach_direct_v: bool = False, unet_args_T: dict = None,
-                 v_blur: float = 0.0, detach_trajectory: bool = False):
+                 v_blur: float = 0.0, detach_trajectory: bool = False, freeze_bn: str = "none"):
         """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy).
 
         unet_args_T defaults to unet_args; pass it when CNN2 must differ architecturally from CNN1,
@@ -62,12 +63,33 @@ class LGCNNEndToEnd(Model):
         # stop-gradient across RK4 steps: dL/dv then blames only the velocity each step sampled,
         # instead of chaining back along the whole line (see calc_streamlines)
         self.detach_trajectory = detach_trajectory
+        # BatchNorm layers of CNN1 ("v"), CNN2 ("T"), both or none that stay in eval mode while the
+        # model trains: they normalize with their running statistics and never update them, while
+        # the affine gamma/beta still train. Stage 2 sees one full-domain sample per step, so
+        # trainable statistics drift toward that sample. See train().
+        if freeze_bn not in self.FREEZE_BN_OPTIONS:
+            raise ValueError(f"freeze_bn must be one of {self.FREEZE_BN_OPTIONS}, got {freeze_bn!r}")
+        self.freeze_bn = freeze_bn
         self.last_intermediates = {}  # detached v/streamlines of the last forward, for plots
         # set by PipelineTap for one step: keep the LIVE stage tensors and retain their .grad, so a
         # single backward yields every stage's input/output *and* the loss gradient on both sides
         # of it. Off by default - it pins a few full-size tensors plus their gradients.
         self.capture_intermediates = False
         self.tapped = {}
+
+    def frozen_bn_layers(self):
+        """The BatchNorm layers selected by freeze_bn."""
+        nets = {"none": (), "v": (self.unet_v,), "T": (self.unet_T,), "both": (self.unet_v, self.unet_T)}[self.freeze_bn]
+        return [m for net in nets for m in net.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+
+    def train(self, mode: bool = True):
+        """nn.Module.train, except that the BatchNorm layers selected by freeze_bn stay in eval mode.
+        Only calls on this model are affected: stage-1 pretraining trains unet_v directly and keeps
+        ordinary BatchNorm."""
+        super().train(mode)
+        for m in self.frozen_bn_layers():
+            m.eval()
+        return self
 
     def _load_unet(self, net, path, label: str, device: str = "cpu", model_name: str = "model.pt"):
         """Load one sub-net from a separately trained run directory, with a legible shape check.
