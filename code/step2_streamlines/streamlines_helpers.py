@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
+from torch.autograd.function import once_differentiable
 from datetime import datetime
 from pathlib import Path
 
@@ -178,7 +179,7 @@ def draw_streamlines(image_data:torch.Tensor, streamlines:list, faded:bool=False
 # 0.02 cell: 0.2% of peak vs 45%). See check_drawing_gradient.py. Blur's roughness is intrinsic -
 # _scatter_bilinear's piecewise-linear weights give a piecewise-constant derivative that jumps at
 # every cell boundary - so no window fixes it; blur is kept for larger sigma, where splat's
-# window^2 memory is what made a 24 GB card OOM in the first place.
+# window^2 work per sample makes it slow (its memory is O(n_samples) since _GaussianSplat).
 SIGMA_BLUR_MIN = 1.5
 # Half-width of the drawing kernel, in units of sigma. 2.0 truncated the Gaussian where it is still
 # 13.5% of its peak, and that truncation - not the sub-cell kernel - was the source of the splat
@@ -186,6 +187,79 @@ SIGMA_BLUR_MIN = 1.5
 # (4 sigma + 1)^2: 81 vs 25 at sigma=1. It also changes the forward slightly (+2.6% total occupancy
 # at sigma=1), because less of the Gaussian is thrown away.
 KERNEL_HALF_WIDTHS = 4.0
+# Chunk size of the splat, as a budget of window^2 kernel entries per chunk (samples per chunk =
+# budget // window^2). Bounds the transient memory of one chunk - int64 cell index plus a few float
+# tensors, ~24 bytes per entry - to ~0.4 GB, independent of sigma and window.
+SPLAT_CHUNK_ENTRIES = 2**24
+
+
+class _GaussianSplat(torch.autograd.Function):
+    """Sum of normalized Gaussians of width sigma, one per sample, weighted by amp and cut to a
+    window x window neighborhood: density[c] = sum_s amp_s * exp(-|p_s - c|^2 / 2 sigma^2) / (2 pi sigma^2).
+
+    The same field and gradient as evaluating every kernel entry under autograd, but autograd kept
+    n_samples x window^2 entries (offsets, kernel values, int64 cell indices) - ~7 GB at window 9 on
+    the full domain. Here only the positions and amplitudes are saved: the forward deposits chunk by
+    chunk without a graph, and the backward recomputes each chunk's kernel and applies its analytic
+    derivative, dk/dx = -k (x - c_i) / sigma^2. Memory is O(n_samples) plus one chunk.
+    Which cells a sample covers - the floor of its position - is discrete and gets no gradient, as
+    in the autograd version. Cells outside the domain get k = 0.
+    """
+
+    @staticmethod
+    def _offsets(window, dtype, device):
+        half = window // 2
+        o = torch.arange(-half, half + 1, dtype=dtype, device=device)
+        oi, oj = torch.meshgrid(o, o, indexing="ij")
+        return oi.reshape(1, -1), oj.reshape(1, -1)
+
+    @staticmethod
+    def _kernel(x, y, offs, sigma, dims):
+        """Flat cell index, kernel value and (dx, dy) for one chunk of samples, each [n, window^2]."""
+        ci = (x + 0.5).floor().unsqueeze(1) + offs[0]
+        cj = (y + 0.5).floor().unsqueeze(1) + offs[1]
+        dx, dy = x.unsqueeze(1) - ci, y.unsqueeze(1) - cj
+        inside = (ci >= 0) & (ci < dims[0]) & (cj >= 0) & (cj < dims[1])
+        k = torch.exp(-(dx * dx + dy * dy) / (2 * sigma ** 2)) / (2 * np.pi * sigma ** 2) * inside
+        idx = torch.where(inside, ci.long() * dims[1] + cj.long(), 0)
+        return idx, k, dx, dy
+
+    @staticmethod
+    def forward(ctx, x, y, amp, dims, sigma, window):
+        offs = _GaussianSplat._offsets(window, x.dtype, x.device)
+        step = max(SPLAT_CHUNK_ENTRIES // (window * window), 1)
+        density = torch.zeros(dims[0] * dims[1], dtype=x.dtype, device=x.device)
+        for s in range(0, x.shape[0], step):
+            idx, k, _, _ = _GaussianSplat._kernel(x[s:s+step], y[s:s+step], offs, sigma, dims)
+            density.index_add_(0, idx.reshape(-1), (k * amp[s:s+step].unsqueeze(1)).reshape(-1))
+        ctx.save_for_backward(x, y, amp)
+        ctx.dims, ctx.sigma, ctx.window, ctx.step = dims, sigma, window, step
+        return density.view(dims[0], dims[1])
+
+    @staticmethod
+    @once_differentiable
+    def backward(ctx, grad_density):
+        x, y, amp = ctx.saved_tensors
+        g = grad_density.reshape(-1)
+        need_x, need_y, need_amp = ctx.needs_input_grad[:3]
+        gx = torch.zeros_like(x) if need_x else None
+        gy = torch.zeros_like(y) if need_y else None
+        gamp = torch.zeros_like(amp) if need_amp else None
+        offs = _GaussianSplat._offsets(ctx.window, x.dtype, x.device)
+        step = ctx.step
+        for s in range(0, x.shape[0], step):
+            sl = slice(s, s + step)
+            idx, k, dx, dy = _GaussianSplat._kernel(x[sl], y[sl], offs, ctx.sigma, ctx.dims)
+            gk = g[idx] * k  # dL/ddensity at every covered cell, times the kernel value there
+            if need_amp:
+                gamp[sl] = gk.sum(1)
+            if need_x or need_y:
+                gk = gk * (amp[sl] / -ctx.sigma ** 2).unsqueeze(1)
+                if need_x:
+                    gx[sl] = (gk * dx).sum(1)
+                if need_y:
+                    gy[sl] = (gk * dy).sum(1)
+        return gx, gy, gamp, None, None, None
 
 def _scatter_bilinear(density, x, y, amp, dims):
     # Deposit each sample's mass `amp` on the 4 cell centers surrounding it (centers sit at integer
@@ -260,10 +334,10 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     #
     # Two ways to rasterize the same field, selected by `method`:
     #  "splat": evaluate the Gaussian at every cell of each sample's window x window neighborhood.
-    #      Exact, but allocates n_samples x window^2 = n_samples x (8 sigma + 1)^2 entries per line
-    #      and *keeps them in the autograd graph* -> memory grows quadratically in sigma and runs a
-    #      24 GB card out of memory for large sigma on full-domain data. Its gradient w.r.t. sample
-    #      position is smooth, because the Gaussian is evaluated at the true sub-cell distance.
+    #      Exact; computes n_samples x (8 sigma + 1)^2 kernel entries, but _GaussianSplat keeps none
+    #      of them for backward (it recomputes them chunk-wise), so memory is O(n_samples). Its
+    #      gradient w.r.t. sample position is smooth, because the Gaussian is evaluated at the true
+    #      sub-cell distance.
     #  "blur": a Gaussian splat is a point mass convolved with a Gaussian, so scatter each sample
     #      bilinearly (4 cells) and convolve the accumulated density once, separably. Memory per
     #      sample is constant in sigma and the convolution is one cheap pass over the grid; the
@@ -288,11 +362,7 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
     dtype = streamlines[0][0].dtype if streamlines else torch.float32
     density = torch.zeros(tuple(dims), dtype=dtype, device=device)
     half = window // 2
-    if not use_blur:
-        offs = torch.arange(-half, half+1, dtype=dtype, device=device)
-        off_i, off_j = torch.meshgrid(offs, offs, indexing='ij')
-        off_i = off_i.reshape(1,-1)
-        off_j = off_j.reshape(1,-1)
+    splat_x, splat_y, splat_amp = [], [], []  # splat path: all lines' samples, drawn in one call
     for sol_x, sol_y, t in streamlines:
         if len(t) < 2:
             continue
@@ -309,14 +379,11 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
             # unit point masses now, Gaussian applied to the summed density below
             _scatter_bilinear(density, sol_x, sol_y, fade*ds, dims)
             continue
-        # cells around each sample; which cell a blob lands in is discrete -> detached,
-        # the smooth kernel below carries the gradient
-        cells_i = (sol_x + 0.5).floor().detach().unsqueeze(1) + off_i
-        cells_j = (sol_y + 0.5).floor().detach().unsqueeze(1) + off_j
-        d2 = (sol_x.unsqueeze(1) - cells_i)**2 + (sol_y.unsqueeze(1) - cells_j)**2
-        w = torch.exp(-d2/(2*sigma**2)) / (2*np.pi*sigma**2) * (fade*ds).unsqueeze(1)
-        mask = (cells_i >= 0) & (cells_i < dims[0]) & (cells_j >= 0) & (cells_j < dims[1])
-        density.index_put_((cells_i[mask].long(), cells_j[mask].long()), w[mask], accumulate=True)
+        splat_x.append(sol_x); splat_y.append(sol_y); splat_amp.append(fade*ds)
+    if splat_x:
+        # the gradient w.r.t. amp flows on through ds into the positions via ordinary autograd
+        density = density + _GaussianSplat.apply(torch.cat(splat_x), torch.cat(splat_y), torch.cat(splat_amp),
+                                                 (int(dims[0]), int(dims[1])), float(sigma), window)
     if use_blur:
         density = _gaussian_blur_separable(density, np.sqrt(max(sigma**2 - 1/6, 1e-6)), half)
     return 1 - torch.exp(-density)
