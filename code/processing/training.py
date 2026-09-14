@@ -170,4 +170,6 @@ def load_hyperparams(args):
     args["lr"] = float(hyperparams["lr"]["values"][0])
     args["inputs"] = hyperparams["inputs"]["values"][0]
     args["train_loss"] = hyperparams["train_loss"]["values"][0]
+    # e2e only, optional: loss type of the velocity term (missing or null = same as train_loss)
+    args["v_loss"] = hyperparams.get("v_loss", {}).get("values", [None])[0]
     return args

@@ -39,8 +39,13 @@ inputs:
     - pki
 train_loss:
   values:
-  # e2e stage 2: base loss L of E2ELoss = L(T) + lambda_v * L(v)  (MSE | MAE | Huber)
+  # e2e stage 2: loss L of the temperature term in L(T) + lambda_v * L_v(v)  (MSE | MAE | Huber)
   - MAE
+v_loss:
+  values:
+  # e2e stage 2, training loss only: loss L_v of the velocity term (MSE | MAE | Huber),
+  # null = same as train_loss
+  - MSE
 bool_cutouts:
   values:
   - True

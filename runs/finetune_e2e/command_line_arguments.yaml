@@ -27,7 +27,7 @@ model_T: ../../models/BEST_predict_T_add_s_outer
 unet_args_T:
   kernel_size: 4
 
-epochs: 300        # joint end-to-end finetuning (1 optimizer step per epoch and datapoint)
+epochs: 100        # joint end-to-end finetuning (1 optimizer step per epoch and datapoint)
 stage1_epochs: 0   # no velocity pretraining: baseline_v already IS the pretrained CNN1
 inputs: pki
 outputs: t
@@ -56,7 +56,7 @@ lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_st
   0: 0.0001          # 1e-4 for the first 100 epochs - deliberately 10x the tuned rate, to push the
   100: 0.00001       # loaded baselines off their optimum, then back to CNN2's tuned 1e-5
 clip_grad: 1.0     # cap on the gradient norm (exploding gradients through the streamlines)
-lambda_v: 0.01     # small velocity term (same loss type as T) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+lambda_v: 0.005     # small velocity term (loss type: v_loss in HPS_options, default = T loss) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
 val_loss: Huber    # validation loss, also selects the best epoch: MSE | MAE | Huber (delta 1.0), in the
                    # same E2ELoss form as train_loss (HPS_options). Unset = same as the training loss.
 val_loss_with_v: false  # true = Huber(T) + lambda_v * Huber(v), false = Huber(T) only
@@ -73,12 +73,12 @@ bn_reestimate: false  # recompute BatchNorm running stats on full-domain inputs 
 # --- diagnostics -----------------------------------------------------------------------------
 grad_diag: true        # decompose CNN1's gradient into streamline vs direct routes + save a plot
 grad_diag_only: false  # false = actually run the finetuning
-pipeline_plot_every: 25  # every N optimizer steps: each stage's in/out + the loss gradients around it
+pipeline_plot_every: 5  # every N optimizer steps: each stage's in/out + the loss gradients around it
 pipeline_plot_max: 40    # cap on the number of such plots (0 = unlimited)
 
 # blur
-v_blur: 0.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
-v_blur_end: 0.0           # anneal target (null = constant v_blur)
+v_blur: 1.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
+v_blur_end: 1.0           # anneal target (null = constant v_blur)
 v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
 
 

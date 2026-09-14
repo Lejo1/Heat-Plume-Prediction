@@ -22,7 +22,8 @@ class CombiLoss(nn.Module):
 
 class E2ELoss(nn.Module):
     """
-    Loss for the end-to-end LGCNN: L(T) + lambda_v * L(v), with L = MSE, MAE or Huber (`base`).
+    Loss for the end-to-end LGCNN: L(T) + lambda_v * L_v(v), with L = MSE, MAE or Huber (`base`)
+    and L_v the same choice for the velocity term (`base_v`; None = same as `base`).
     Predictions and labels carry 3 channels [T, vx, vy] (normalized units, comparable scales).
     lambda_v = 0 recovers the pure temperature loss.
     Huber keeps PyTorch's delta=1.0: normalized errors are ~1e-2, so it stays in its quadratic
@@ -30,19 +31,23 @@ class E2ELoss(nn.Module):
     """
     BASES = {"mse": nn.MSELoss, "mae": nn.L1Loss, "huber": nn.HuberLoss}
 
-    def __init__(self, lambda_v: float = 0.5, base: str = "mse"):
+    def __init__(self, lambda_v: float = 0.5, base: str = "mse", base_v: str = None):
         super(E2ELoss, self).__init__()
-        if base.lower() not in self.BASES:
-            raise ValueError(f"E2ELoss base must be one of {list(self.BASES)}, got {base!r}")
+        base_v = base if base_v is None else base_v
+        for label, b in (("base", base), ("base_v", base_v)):
+            if b.lower() not in self.BASES:
+                raise ValueError(f"E2ELoss {label} must be one of {list(self.BASES)}, got {b!r}")
         self.fn = self.BASES[base.lower()]()
+        self.fn_v = self.BASES[base_v.lower()]()
         self.lambda_v = lambda_v
-        self.name = rf"E2ELoss ({base.upper()}, lambda_v={lambda_v})"
+        v_part = "" if base_v.lower() == base.lower() else f", v: {base_v.upper()}"
+        self.name = rf"E2ELoss ({base.upper()}{v_part}, lambda_v={lambda_v})"
 
     def forward(self, predictions, labels):
         loss_T = self.fn(predictions[:, 0:1], labels[:, 0:1])
         if self.lambda_v == 0:
             return loss_T
-        return loss_T + self.lambda_v * self.fn(predictions[:, 1:3], labels[:, 1:3])
+        return loss_T + self.lambda_v * self.fn_v(predictions[:, 1:3], labels[:, 1:3])
     
 
 class SSIMLoss(nn.Module):

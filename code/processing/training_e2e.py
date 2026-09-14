@@ -213,13 +213,14 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
 
     # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
     if args["case"] in ["train", "finetune"]:
-        # loss = L(T) + lambda_v * L(v); lambda_v=0 (or missing key) = pure temperature loss.
-        # L of the training loss is train_loss (HPS_options), L of the validation loss - which also
-        # selects the best epoch - is val_loss (command_line_arguments; unset = the training loss).
-        # val_loss_with_v: false drops the velocity term from the validation loss only.
+        # loss = L(T) + lambda_v * L_v(v); lambda_v=0 (or missing key) = pure temperature loss.
+        # Training loss: L = train_loss, L_v = v_loss (both HPS_options; v_loss unset = train_loss).
+        # Validation loss - which also selects the best epoch: L = L_v = val_loss
+        # (command_line_arguments; unset = the training loss). val_loss_with_v: false drops the
+        # velocity term from the validation loss only.
         # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
         lambda_v = args.get("lambda_v", 0.0)
-        train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"])
+        train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"))
         val_loss_fct = None
         if args.get("val_loss"):
             val_loss_fct = E2ELoss(lambda_v=lambda_v if args.get("val_loss_with_v", True) else 0.0,
