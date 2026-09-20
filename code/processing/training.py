@@ -152,6 +152,29 @@ def select_loss_function(args):
         loss = CombiLoss(0.75)
     return loss
 
+def suggest_hyperparam(trial, config: dict, key: str, default=None):
+    """Draw one hyperparameter from its HPS_options.yaml entry.
+
+    Accepted forms:
+      {values: [...]}                categorical - the format the whole file used so far
+      {low: a, high: b}              range; int when both bounds are ints, else float
+      {low: a, high: b, log: true}   log-uniform (for lr, lambda_v, ...)
+      {low: a, high: b, step: s}     stepped range
+    A key that is not in the file keeps `default`, so a search only lists what it actually varies.
+    """
+    spec = config.get(key)
+    if spec is None:
+        return default
+    if not isinstance(spec, dict):  # e.g. "lr: 1e-5" - a fixed value, nothing to search
+        return spec
+    if "values" in spec:
+        return trial.suggest_categorical(key, spec["values"])
+    low, high, log, step = spec["low"], spec["high"], bool(spec.get("log", False)), spec.get("step")
+    if isinstance(low, int) and isinstance(high, int) and not log and isinstance(step, (int, type(None))):
+        return trial.suggest_int(key, low, high, step=step or 1)
+    return trial.suggest_float(key, float(low), float(high), log=log, **({"step": step} if step else {}))
+
+
 def load_hyperparams(args):
     hyperparams = load_yaml(args["destination"] / "HPS_options.yaml")
     args["len_box"] = hyperparams["len_box"]["values"][0]

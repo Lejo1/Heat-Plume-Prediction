@@ -68,7 +68,7 @@ class Solver(object):
         self.clip_stats = {"steps": 0, "clipped": 0, "max_norm": 0.0,
                            "nonfinite_steps": 0, "nonfinite_tensors": 0}
 
-    def train(self, args: dict):
+    def train(self, args: dict, optuna_trial=None):
         manual_seed(0)
         start_time = time.perf_counter()
         # initialize tensorboard
@@ -133,6 +133,14 @@ class Solver(object):
                         "optimizer": _snapshot(self.opt.state_dict()),
                         "training time in sec": (time.perf_counter() - start_time),
                     }
+
+                # hyperparameter search: report this epoch and let the pruner end hopeless trials.
+                # TrialPruned passes the except below (which only catches KeyboardInterrupt) on to optuna.
+                if optuna_trial is not None:
+                    import optuna
+                    optuna_trial.report(val_epoch_loss, epoch)
+                    if optuna_trial.should_prune():
+                        raise optuna.TrialPruned(f"pruned in epoch {epoch}, val loss {val_epoch_loss:.4e}")
 
             except KeyboardInterrupt:
                 # allows to interrupt training with ctrl+c to change the lr manually

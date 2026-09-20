@@ -1,0 +1,62 @@
+# Hyperparameter search over the e2e pipeline trained FROM SCRATCH (case: train):
+#   cd code && python main.py --destination hsearch_example_e2e --hsearch True
+# Like runs/example_e2e, but CNN2's architecture is searched as well (kernel_size_T, depth_T,
+# init_features_T in HPS_options.yaml). CNN1 stays pinned to baseline_v (model_v), so its
+# architecture keys must keep the baseline's values. Every trial trains in
+# hsearch_example_e2e/trials/<number>/. Objective: the best (lowest) val_loss of a trial.
+pipeline: e2e
+case: train
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false       # full domain, comparable with the finetune runs
+
+# --- study ------------------------------------------------------------------------------------
+n_trials: 20
+pruner_startup_trials: 3
+pruner_warmup_epochs: 20   # CNN2 starts randomly initialized, so prune later than in the finetune search
+
+# --- fixed pipeline setup ----------------------------------------------------------------------
+model: null
+model_v: ../../models/BEST_predict_v_v4   # CNN1 pinned (paper footnote b); CNN2 starts randomly initialized
+stage1_epochs: 0       # unused: with model_v set, the train case skips stage 1 entirely
+epochs: 300            # per trial; hopeless trials end earlier through the pruner
+inputs: pki
+outputs: t
+notes: hyperparameter search (e2e from scratch, CNN2 architecture + stage-2 parameters)
+randomK: true
+t_steps: 10000
+fade_mode: absolute
+compile: true
+stage1_force: false
+val_loss: Huber
+val_loss_with_v: false
+order_data:
+- 0
+- 1
+- 2
+
+# --- lr comes from HPS_options.yaml -------------------------------------------------------------
+lr_schedule:           # MUST stay empty, as must lr_stage2: both would override the searched lr
+                       # (run_e2e refuses a search config that sets either)
+
+# --- defaults for searched keys (used when HPS_options.yaml does not list them) ------------------
+unet_args_T:           # CNN2 overrides; the searched *_T keys are written in here per trial
+sigma: 1.0
+v_blur: 0.0
+v_blur_end: 0.0        # follows the drawn v_blur automatically while v_blur is searched
+v_blur_anneal_epochs:
+lambda_v: 0.01
+clip_grad: 1.0
+detach_direct_v: false
+detach_trajectory: true
+bn_reestimate: false
+freeze_bn: none
+
+# --- diagnostics off: they cost minutes per trial -----------------------------------------------
+visualize: false
+grad_diag: false
+grad_diag_only: false
+pipeline_plot_every: 0
+pipeline_plot_max: 0

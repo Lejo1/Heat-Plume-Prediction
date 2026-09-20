@@ -19,13 +19,17 @@ from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.model import weights_init
 from processing.solver import Solver
-from processing.training import load_hyperparams
-from utils.utils_args import save_yaml
+from processing.training import load_hyperparams, suggest_hyperparam
+from utils.utils_args import load_yaml, save_yaml
 
 
-def training_e2e(args: Dict, PATH_DATA_PREP: Path):
+def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
     """End-to-end LGCNN training: CNN1 + differentiable streamlines + CNN2, trained jointly
-    from scratch on the temperature loss only. Full-domain samples, batch size 1."""
+    from scratch on the temperature loss only. Full-domain samples, batch size 1.
+
+    optuna_trial: hyperparameter search - the Solver reports every epoch's validation loss to it and
+    raises TrialPruned when the pruner decides to stop. The best validation loss of a finished run is
+    left on the returned model as `best_val_loss` (see run_e2e)."""
     np.random.seed(1)
     torch.manual_seed(1)
     multiprocessing.set_start_method("spawn", force=True)
@@ -278,7 +282,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print(f"STAGE 2: joint end-to-end training, {args['epochs']} epochs")
         training_time = datetime.now()
         try:
-            solver.train(args)
+            solver.train(args, optuna_trial=optuna_trial)
         except KeyboardInterrupt:
             logging.warning(f"Manually stopping training early with best model found in epoch {solver.best_model_params['epoch']}.")
         finally:
@@ -287,6 +291,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
             print("Training finished")
 
         training_time = datetime.now() - training_time
+        model.best_val_loss = solver.best_model_params["loss"]  # objective of a hyperparameter search
         model.save(args["destination"])
         solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time.total_seconds(), args["device"])
 
@@ -299,6 +304,74 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path):
         print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
         visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
     return model
+
+
+# Hyperparameters an e2e search may vary. The first group lives in HPS_options.yaml (training_e2e
+# reads it back through load_hyperparams), the second in command_line_arguments.yaml. Architecture
+# keys stay out: in the finetune case the baseline checkpoints have to keep loading.
+E2E_SEARCH_KEYS_HPS = ("lr", "train_loss", "v_loss")
+E2E_SEARCH_KEYS_CLA = ("v_blur", "sigma", "lambda_v", "clip_grad", "freeze_bn",
+                       "detach_direct_v", "detach_trajectory", "bn_reestimate")
+# CNN2's architecture, searchable with a "_T" suffix (kernel_size_T, ...) and written into
+# unet_args_T. Only useful where CNN2 is randomly initialized (case "train"): in a finetune the
+# baseline checkpoint fixes its shapes. CNN1's architecture is never searchable here - it comes from
+# the unsuffixed keys and has to match model_v.
+E2E_SEARCH_KEYS_UNET_T = ("kernel_size_T", "depth_T", "init_features_T", "stride_T", "dilation_T",
+                          "activation_fct_T", "norm_T", "repeat_inner_T")
+
+
+def run_e2e(trial, args: Dict, PATH_DATA_PREP: Path):
+    """One optuna trial of the end-to-end pipeline; returns that run's best validation loss.
+
+    Each trial trains in its own <destination>/trials/<number>/ with the drawn configuration written
+    next to its outputs, so trials cannot overwrite each other's checkpoints, plots and tensorboard
+    files and any single trial can be repeated on its own. A key that HPS_options.yaml does not list
+    keeps the value from the search folder's command_line_arguments.yaml, so a search file only has
+    to name what it actually varies.
+    """
+    base = args["destination"]
+    config = load_yaml(base / "HPS_options.yaml")
+    args = dict(args)  # optuna reuses the same args dict for every trial
+    hps = {k: (dict(v) if isinstance(v, dict) else v) for k, v in config.items()}
+
+    drawn = {}
+    for key in E2E_SEARCH_KEYS_HPS + E2E_SEARCH_KEYS_CLA:
+        args[key] = suggest_hyperparam(trial, config, key, args.get(key))
+        hps[key] = {"values": [args[key]]}  # resolved to one value - the form load_hyperparams reads
+        if key in config:
+            drawn[key] = args[key]
+    unet_args_T = dict(args.get("unet_args_T") or {})
+    for key in E2E_SEARCH_KEYS_UNET_T:
+        if key in config:
+            unet_args_T[key[:-2]] = drawn[key] = suggest_hyperparam(trial, config, key)
+            hps[key] = {"values": [unet_args_T[key[:-2]]]}
+    args["unet_args_T"] = unet_args_T
+    # lr comes from HPS_options; lr_stage2 and lr_schedule entries would silently override it
+    assert not args.get("lr_stage2"), "a search config must not set lr_stage2 - it overrides the searched lr"
+    assert not args.get("lr_schedule"), "a search config must not set lr_schedule - it overrides the searched lr"
+    if "v_blur" in config and "v_blur_end" not in config:
+        args["v_blur_end"] = args["v_blur"]  # searched blur stays constant unless annealing is searched too
+
+    trial_dir = base / "trials" / str(trial.number)
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    args["destination"] = trial_dir
+    save_yaml(hps, trial_dir / "HPS_options.yaml")
+    save_yaml(args, trial_dir / "command_line_arguments.yaml")
+    print(f"=== trial {trial.number} -> {trial_dir}: " + ", ".join(f"{k}={v}" for k, v in drawn.items()), flush=True)
+
+    try:
+        model = training_e2e(args, PATH_DATA_PREP, optuna_trial=trial)
+        val_loss = float(model.best_val_loss)
+        del model
+    except torch.cuda.OutOfMemoryError as e:
+        import optuna
+        print(f"=== trial {trial.number}: out of memory, pruned ({str(e)[:100]})", flush=True)
+        raise optuna.TrialPruned("out of memory") from e
+    finally:
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+    print(f"=== trial {trial.number}: best val loss {val_loss:.6e}", flush=True)
+    return val_loss
 
 
 def reestimate_bn_stats(model, dataloader, device, repeats: int = 1):

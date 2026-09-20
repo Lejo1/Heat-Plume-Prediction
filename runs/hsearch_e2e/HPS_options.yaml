@@ -1,0 +1,66 @@
+# Search space of the e2e hyperparameter search. Two forms per key:
+#   values: [...]                  categorical
+#   low/high (+ log:, step:)       range; int when both bounds are ints, else float
+# A key listed here is searched, a key left out keeps the value from command_line_arguments.yaml.
+# The architecture block below is NOT searchable in the finetune case: baseline_v / baseline_T must
+# still load into CNN1 / CNN2, so their shapes are fixed.
+
+# --- searched -----------------------------------------------------------------------------------
+lr:
+  low: 0.000001
+  high: 0.0001
+  log: true
+train_loss:
+  values: [MAE, MSE, Huber]
+v_loss:
+  values: [MAE, MSE]
+lambda_v:
+  low: 0.0001
+  high: 1.0
+  log: true
+v_blur:
+  low: 0.0
+  high: 4.0
+sigma:            # must stay below SIGMA_BLUR_MIN (1.5), else the rasterizer takes the blur path
+  low: 0.5
+  high: 4.0
+clip_grad:
+  values: [1.0, 10.0, 100.0]
+freeze_bn:
+  values: [none, v, T, both]
+detach_direct_v:
+  values: [true, false]
+detach_trajectory:
+  values: [true, false]
+bn_reestimate:
+  values: [true, false]
+
+# --- fixed architecture (CNN1 = baseline_v; CNN2 differs only in kernel_size, see unet_args_T) ---
+batchsize:
+  values: [20]
+kernel_size:
+  values: [5]
+depth:
+  values: [4]
+init_features:
+  values: [32]
+stride:
+  values: [1]
+dilation:
+  values: [1]
+activation_fct:
+  values: [ReLU]
+norm:
+  values: [batchnorm]
+repeat_inner:
+  values: [False]
+skip_per_dir:
+  values: [16]
+len_box:
+  values: [256]
+inputs:
+  values: [pki]
+bool_cutouts:
+  values: [True]
+optimizer_switch:
+  values: [False]

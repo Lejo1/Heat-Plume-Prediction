@@ -1,0 +1,61 @@
+# Hyperparameter search over the end-to-end pipeline:
+#   cd code && python main.py --destination hsearch_e2e --hsearch True
+# Every trial trains in hsearch_e2e/trials/<number>/ with its own configs, checkpoints and
+# tensorboard file. The search space lives in HPS_options.yaml; the values here are the defaults for
+# everything that file does NOT vary. Objective: the best (lowest) val_loss of a trial.
+pipeline: e2e
+case: finetune
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false
+
+# --- study ------------------------------------------------------------------------------------
+n_trials: 20              # trials per call of main.py; the study resumes on the next call
+pruner_startup_trials: 3  # MedianPruner: no pruning before this many finished trials
+pruner_warmup_epochs: 10  # and not before this epoch within a trial
+
+# --- fixed pipeline setup (not searched) -------------------------------------------------------
+model: null
+model_v: ../../models/BEST_predict_v_v4
+model_T: ../../models/BEST_predict_T_add_s_outer
+unet_args_T:
+  kernel_size: 4
+epochs: 40         # per trial; the best epoch is usually early, and 40 keeps a trial at ~15 min
+stage1_epochs: 0
+inputs: pki
+outputs: t
+notes: hyperparameter search (e2e stage 2)
+randomK: true
+t_steps: 10000
+fade_mode: absolute
+compile: true
+stage1_force: false
+val_loss: Huber         # objective: Huber(T) on the validation sample
+val_loss_with_v: false
+order_data:
+- 0
+- 1
+- 2
+
+# --- defaults for searched keys (used when HPS_options.yaml does not list them) ----------------
+lr_schedule:              # MUST stay empty: any entry here would override the searched lr
+                          # (same for lr_stage2) - the trial's lr comes from HPS_options.yaml
+sigma: 1.0
+v_blur: 1.0
+v_blur_end: 1.0           # set to the drawn v_blur automatically while v_blur is searched
+v_blur_anneal_epochs:
+lambda_v: 0.01
+clip_grad: 10.0
+detach_direct_v: true
+detach_trajectory: false
+bn_reestimate: false
+freeze_bn: none
+
+# --- diagnostics off: they cost minutes per trial and are not needed for the objective ---------
+visualize: false
+grad_diag: false
+grad_diag_only: false
+pipeline_plot_every: 0
+pipeline_plot_max: 0

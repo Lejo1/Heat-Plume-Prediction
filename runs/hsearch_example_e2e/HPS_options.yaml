@@ -1,0 +1,76 @@
+# Search space of the from-scratch e2e search. Forms per key:
+#   values: [...]              categorical
+#   low/high (+ log:, step:)   range; int when both bounds are ints, else float
+# Keys with the suffix _T configure CNN2 (written into unet_args_T) and are only searchable because
+# CNN2 starts randomly initialized here. The unsuffixed architecture block is CNN1's and must keep
+# baseline_v's values, or model_v no longer loads.
+# The *_T value lists follow code/default_HPS_options.yaml (the paper's search space), extended by
+# kernel_size 4, which baseline_T uses.
+
+# --- CNN2 architecture (searched) ----------------------------------------------------------------
+kernel_size_T:
+  values: [3, 4, 5, 7]
+depth_T:
+  values: [4, 5, 6, 7]
+init_features_T:
+  values: [4, 8, 16, 32, 64]
+
+# --- stage-2 / streamline parameters (searched) ---------------------------------------------------
+lr:
+  low: 0.00001
+  high: 0.001
+  log: true
+train_loss:
+  values: [MSE, MAE, Huber]
+v_loss:
+  values: [MSE, MAE]
+lambda_v:
+  low: 0.0001
+  high: 1.0
+  log: true
+v_blur:
+  low: 0.0
+  high: 4.0
+sigma:               # must stay below SIGMA_BLUR_MIN (1.5), else the rasterizer takes the blur path
+  low: 0.5
+  high: 4.0
+clip_grad:
+  values: [1.0, 10.0, 100.0]
+freeze_bn:           # only CNN1 is worth freezing here: CNN2's statistics start out random
+  values: [none, v]
+detach_direct_v:
+  values: [true, false]
+detach_trajectory:
+  values: [true, false]
+bn_reestimate:
+  values: [true, false]
+
+# --- CNN1 architecture: fixed to baseline_v (model_v), do NOT search ------------------------------
+kernel_size:
+  values: [5]
+depth:
+  values: [4]
+init_features:
+  values: [32]
+stride:
+  values: [1]
+dilation:
+  values: [1]
+activation_fct:
+  values: [ReLU]
+norm:
+  values: [batchnorm]
+repeat_inner:
+  values: [False]
+batchsize:
+  values: [20]
+skip_per_dir:
+  values: [16]
+len_box:
+  values: [256]
+inputs:
+  values: [pki]
+bool_cutouts:
+  values: [True]
+optimizer_switch:
+  values: [False]
