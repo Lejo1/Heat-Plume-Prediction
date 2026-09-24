@@ -53,9 +53,13 @@ detach_trajectory: false
 bn_reestimate: false
 freeze_bn: none
 
-# --- diagnostics off: they cost minutes per trial and are not needed for the objective ---------
-visualize: false
-grad_diag: false
+# --- diagnostics: same set of files as a normal run, written per trial -------------------------
+# Each trial dir then holds what runs/finetune_e2e holds: measurements_test_start.yaml,
+# val_e2e_start.png, test_e2e_start.png, grad_diag_stage2_start.png, pipeline_plots/ (PNGs +
+# pipeline_scalars.csv), val_e2e.png, test_e2e.png, model.pt, measurements*.yaml, tfevents.
+# A pruned trial keeps only the files written before its stage-2 run ended.
+visualize: true          # start + final val/test panels and measurements_test_start.yaml
+grad_diag: true          # grad_diag_stage2_start.png: CNN1's gradient split into the routes
 grad_diag_only: false
-pipeline_plot_every: 0
-pipeline_plot_max: 0
+pipeline_plot_every: 5   # every N optimizer steps, as in runs/finetune_e2e
+pipeline_plot_max: 40
