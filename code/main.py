@@ -36,7 +36,10 @@ if __name__ == "__main__":
         print(f"Study name: {base.name} ({objective.__name__}), {n_trials} trials, storage {base}/hsearch.db")
         study = optuna.create_study(direction="minimize", storage=f"sqlite:///{base}/hsearch.db",
                                     study_name=base.name, load_if_exists=True, pruner=pruner)
-        study.optimize(lambda trial: objective(trial, args, PATH_DATA_PREP), n_trials=n_trials)
+        # catch: an unexpected error marks that trial FAILED (traceback in the log) and the study goes
+        # on with the next one; Ctrl+C (KeyboardInterrupt, not an Exception) still stops it
+        study.optimize(lambda trial: objective(trial, args, PATH_DATA_PREP), n_trials=n_trials,
+                       catch=(Exception,))
 
         pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
         complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])

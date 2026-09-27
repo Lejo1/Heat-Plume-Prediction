@@ -1,8 +1,8 @@
 # Hyperparameter search over the e2e pipeline trained FROM SCRATCH (case: train):
 #   cd code && python main.py --destination hsearch_example_e2e --hsearch True
-# Like runs/example_e2e, but CNN2's architecture is searched as well (kernel_size_T, depth_T,
-# init_features_T in HPS_options.yaml). CNN1 stays pinned to baseline_v (model_v), so its
-# architecture keys must keep the baseline's values. Every trial trains in
+# Like runs/example_e2e: CNN1 pinned to baseline_v (model_v), CNN2 randomly initialized with the
+# paper's best step-3 architecture (BEST_predict_T_add_s_outer: kernel_size 4, depth 4, 32 features).
+# Only stage-2 / streamline parameters are searched. Every trial trains in
 # hsearch_example_e2e/trials/<number>/. Objective: the best (lowest) val_loss of a trial.
 pipeline: e2e
 case: train
@@ -24,7 +24,7 @@ stage1_epochs: 0       # unused: with model_v set, the train case skips stage 1 
 epochs: 300            # per trial; hopeless trials end earlier through the pruner
 inputs: pki
 outputs: t
-notes: hyperparameter search (e2e from scratch, CNN2 architecture + stage-2 parameters)
+notes: hyperparameter search (e2e from scratch, stage-2 parameters; CNN2 = paper's best step-3 architecture)
 randomK: true
 t_steps: 10000
 fade_mode: absolute
@@ -42,7 +42,8 @@ lr_schedule:           # MUST stay empty, as must lr_stage2: both would override
                        # (run_e2e refuses a search config that sets either)
 
 # --- defaults for searched keys (used when HPS_options.yaml does not list them) ------------------
-unet_args_T:           # CNN2 overrides; the searched *_T keys are written in here per trial
+unet_args_T:           # CNN2 = BEST_predict_T_add_s_outer's architecture: differs from CNN1 only in
+  kernel_size: 4       # kernel_size (depth 4, 32 features, ReLU, batchnorm are shared)
 sigma: 1.0
 v_blur: 0.0
 v_blur_end: 0.0        # follows the drawn v_blur automatically while v_blur is searched

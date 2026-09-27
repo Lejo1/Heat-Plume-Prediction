@@ -312,12 +312,6 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
 E2E_SEARCH_KEYS_HPS = ("lr", "train_loss", "v_loss")
 E2E_SEARCH_KEYS_CLA = ("v_blur", "sigma", "lambda_v", "clip_grad", "freeze_bn",
                        "detach_direct_v", "detach_trajectory", "bn_reestimate")
-# CNN2's architecture, searchable with a "_T" suffix (kernel_size_T, ...) and written into
-# unet_args_T. Only useful where CNN2 is randomly initialized (case "train"): in a finetune the
-# baseline checkpoint fixes its shapes. CNN1's architecture is never searchable here - it comes from
-# the unsuffixed keys and has to match model_v.
-E2E_SEARCH_KEYS_UNET_T = ("kernel_size_T", "depth_T", "init_features_T", "stride_T", "dilation_T",
-                          "activation_fct_T", "norm_T", "repeat_inner_T")
 
 
 def run_e2e(trial, args: Dict, PATH_DATA_PREP: Path):
@@ -340,12 +334,6 @@ def run_e2e(trial, args: Dict, PATH_DATA_PREP: Path):
         hps[key] = {"values": [args[key]]}  # resolved to one value - the form load_hyperparams reads
         if key in config:
             drawn[key] = args[key]
-    unet_args_T = dict(args.get("unet_args_T") or {})
-    for key in E2E_SEARCH_KEYS_UNET_T:
-        if key in config:
-            unet_args_T[key[:-2]] = drawn[key] = suggest_hyperparam(trial, config, key)
-            hps[key] = {"values": [unet_args_T[key[:-2]]]}
-    args["unet_args_T"] = unet_args_T
     # lr comes from HPS_options; lr_stage2 and lr_schedule entries would silently override it
     assert not args.get("lr_stage2"), "a search config must not set lr_stage2 - it overrides the searched lr"
     assert not args.get("lr_schedule"), "a search config must not set lr_schedule - it overrides the searched lr"

@@ -1,19 +1,10 @@
 # Search space of the from-scratch e2e search. Forms per key:
 #   values: [...]              categorical
 #   low/high (+ log:, step:)   range; int when both bounds are ints, else float
-# Keys with the suffix _T configure CNN2 (written into unet_args_T) and are only searchable because
-# CNN2 starts randomly initialized here. The unsuffixed architecture block is CNN1's and must keep
-# baseline_v's values, or model_v no longer loads.
-# The *_T value lists follow code/default_HPS_options.yaml (the paper's search space), extended by
-# kernel_size 4, which baseline_T uses.
-
-# --- CNN2 architecture (searched) ----------------------------------------------------------------
-kernel_size_T:
-  values: [3, 4, 5, 7]
-depth_T:
-  values: [4, 5, 6, 7]
-init_features_T:
-  values: [4, 8, 16, 32, 64]
+# No architecture is searched: CNN1 must keep baseline_v's values (block at the end) or model_v no
+# longer loads, and CNN2 is fixed to the paper's best step-3 architecture via unet_args_T in
+# command_line_arguments.yaml. A fixed architecture also keeps CNN2's output - and with it the area
+# the val loss is computed on - identical across trials, so trials stay comparable.
 
 # --- stage-2 / streamline parameters (searched) ---------------------------------------------------
 lr:
