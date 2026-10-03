@@ -55,6 +55,9 @@ fade_mode: absolute
 lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_stage2 / lr_decay
   0: 0.00001         
 clip_grad: 10.0     # cap on the gradient norm (exploding gradients through the streamlines)
+lambda_traj: 0.0   # streamline-position loss: mean distance [cells] between CNN1's and the simulated velocity's
+                   # centre streamlines (full adjoint); training loss only, 0 = off. ~1e-4 balances its CNN1
+                   # gradient against the T loss's (full adjoint) at the start
 lambda_v: 0.01     # small velocity term (loss type: v_loss in HPS_options, default = T loss) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
 val_loss: Huber    # validation loss, also selects the best epoch: MSE | MAE | Huber (delta 1.0), in the
                    # same E2ELoss form as train_loss (HPS_options). Unset = same as the training loss.

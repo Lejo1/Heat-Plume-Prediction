@@ -388,6 +388,17 @@ def draw_streamlines_soft(streamlines, dims, faded:bool=False, sigma:float=0.7, 
         density = _gaussian_blur_separable(density, np.sqrt(max(sigma**2 - 1/6, 1e-6)), half)
     return 1 - torch.exp(-density)
 
+STREAMLINE_CELL_SIZE = 5  # [m]: velocities in m/y become cells/y
+STREAMLINE_T_END = 27.5   # [y]: integration time of every streamline
+
+def trace_streamlines(starts, vx, vy, dims, randomK_data:bool=False, t_steps:int=10_000,
+                      use_compile:bool=False, detach_trajectory:bool=False):
+    # Differentiable trace of one streamline per start point (cell coordinates) through the physical
+    # velocities vx, vy [m/y] on a dims-sized grid; returns calc_streamlines' (x, y, t) per line.
+    velocity = build_velocity_grid(vx/STREAMLINE_CELL_SIZE, vy/STREAMLINE_CELL_SIZE, dims, randomK_data=randomK_data)
+    return calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=STREAMLINE_T_END, t_steps=t_steps,
+                            use_compile=use_compile, detach_trajectory=detach_trajectory)
+
 def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_data:bool=False,
                         faded:bool=True, t_steps:int=10_000, sigma:float=1.0, use_compile:bool=False,
                         fade_mode:str="absolute", method:str="auto", detach_trajectory:bool=False):
@@ -395,7 +406,6 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
     # rasterize each offset group to a soft-occupancy image (one image per offset).
     # No detach/no_grad: gradients flow from the images back to vx, vy (physical velocities in
     # m/y, sampled on the grid; tensors may live on any device, computation follows them).
-    resolution = 5
     hp_positions = torch.as_tensor(hp_positions, dtype=torch.float32)
     n_hps = hp_positions.shape[0]
     if n_hps == 0:
@@ -404,9 +414,8 @@ def trace_and_draw_soft(hp_positions, vx, vy, dims, offsets:list=(0,), randomK_d
     hp_positions = hp_positions.to(device)
     starts = torch.cat([hp_positions + torch.tensor([0., float(o)], device=device) for o in offsets])
 
-    velocity = build_velocity_grid(vx/resolution, vy/resolution, dims, randomK_data=randomK_data)
-    streamlines = calc_streamlines(starts, velocity, (dims[0]-1, dims[1]-1), t_end=27.5, t_steps=t_steps,
-                                   use_compile=use_compile, detach_trajectory=detach_trajectory)
+    streamlines = trace_streamlines(starts, vx, vy, dims, randomK_data=randomK_data, t_steps=t_steps,
+                                    use_compile=use_compile, detach_trajectory=detach_trajectory)
     return [draw_streamlines_soft(streamlines[i*n_hps:(i+1)*n_hps], dims, faded=faded, sigma=sigma,
                                   fade_mode=fade_mode, method=method)
             for i in range(len(offsets))]

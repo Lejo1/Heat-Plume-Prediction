@@ -75,6 +75,9 @@ class LGCNNEndToEnd(Model):
         # single backward yields every stage's input/output *and* the loss gradient on both sides
         # of it. Off by default - it pins a few full-size tensors plus their gradients.
         self.capture_intermediates = False
+        # heat-pump positions of the last forward in OUTPUT coordinates (one [n, 2] tensor per
+        # sample): the trajectory loss traces its lines in the region predictions/labels cover
+        self.last_hp = []
         self.tapped = {}
 
     def frozen_bn_layers(self):
@@ -150,7 +153,7 @@ class LGCNNEndToEnd(Model):
         sf, sf_outer = [], []
         for b in range(v_phys.shape[0]):
             # heat pump cells: raw Material ID == 2 <=> normalized i-channel == 1
-            hp_positions = torch.nonzero(x_crop[b, self.IDX_I] == 1.0).float() + 0.5  # cell-center offset
+            hp_positions = self.heat_pump_positions(x_crop[b, self.IDX_I])
             occs = trace_and_draw_soft(hp_positions, v_trace[b, 0], v_trace[b, 1], (h, w),
                                        offsets=self.offsets, randomK_data=self.randomK_data,
                                        faded=True, t_steps=self.t_steps, sigma=self.sigma,
@@ -159,6 +162,12 @@ class LGCNNEndToEnd(Model):
             sf.append(occs[0])
             sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
         return torch.stack(sf).unsqueeze(1), torch.stack(sf_outer).unsqueeze(1)
+
+    @staticmethod
+    def heat_pump_positions(i_channel: torch.Tensor) -> torch.Tensor:
+        """[n, 2] cell-centre coordinates of the heat pumps: raw Material ID == 2 <=> normalized
+        i-channel == 1."""
+        return torch.nonzero(i_channel == 1.0).float() + 0.5
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.capture_intermediates:
@@ -196,4 +205,9 @@ class LGCNNEndToEnd(Model):
         ht, wt = T_pred.shape[2:]
         it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2
         v_out = self._tap("v_out", v_norm[:, :, it:it+ht, jt:jt+wt])
+        offset = torch.tensor([it, jt], dtype=torch.float32, device=x.device)
+        self.last_hp = []
+        for b in range(x.shape[0]):
+            hp = self.heat_pump_positions(x_crop[b, self.IDX_I]) - offset
+            self.last_hp.append(hp[(hp[:, 0] >= 0) & (hp[:, 0] < ht) & (hp[:, 1] >= 0) & (hp[:, 1] < wt)])
         return torch.cat([T_pred, v_out], dim=1)

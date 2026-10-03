@@ -26,8 +26,9 @@ Reading the gradient panels
   dL/dv_norm    after CNN1  : the total CNN1 sees = streamline route + direct route
                               (with detach_direct_v it is the streamline route alone)
                               plus the velocity-loss route
-  dL/dv_out     velocity output: gradient of the auxiliary velocity loss lambda_v * L(v) alone,
-                              since the loss is the only consumer of that crop
+  dL/dv_out     velocity output: gradient of the auxiliary velocity terms alone (lambda_v * L(v)
+                              and, if on, lambda_traj * trajectory loss) - the loss is the only
+                              consumer of that crop, so both appear as "velocity loss" below
   CNN1 sources  (bar chart)  : dL/dv_norm split into velocity loss, sf, sf_outer and direct route,
                               each as its share of the sum of the four L2 norms
   dL/dx         before CNN1 : input sensitivity, only populated because the tap sets

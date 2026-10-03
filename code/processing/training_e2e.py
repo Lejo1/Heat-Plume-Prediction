@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
 from processing.e2e_pipeline_plot import PipelineTap
-from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss
+from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss, TrajectoryLoss
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.model import weights_init
 from processing.solver import Solver
@@ -229,7 +229,11 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
         # velocity term from the validation loss only.
         # clip_grad_norm caps exploding gradients from backprop through the chaotic advection.
         lambda_v = args.get("lambda_v", 0.0)
-        train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"))
+        # lambda_traj > 0 adds the streamline-position loss (TrajectoryLoss): CNN1's streamlines vs the
+        # ones traced in the simulated velocity, training loss only
+        lambda_traj = float(args.get("lambda_traj") or 0.0)
+        train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"),
+                                 lambda_traj=lambda_traj, traj=TrajectoryLoss(model) if lambda_traj else None)
         val_loss_fct = None
         if args.get("val_loss"):
             val_loss_fct = E2ELoss(lambda_v=lambda_v if args.get("val_loss_with_v", True) else 0.0,
@@ -310,7 +314,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
 # reads it back through load_hyperparams), the second in command_line_arguments.yaml. Architecture
 # keys stay out: in the finetune case the baseline checkpoints have to keep loading.
 E2E_SEARCH_KEYS_HPS = ("lr", "train_loss", "v_loss")
-E2E_SEARCH_KEYS_CLA = ("v_blur", "sigma", "lambda_v", "clip_grad", "freeze_bn",
+E2E_SEARCH_KEYS_CLA = ("v_blur", "sigma", "lambda_v", "lambda_traj", "clip_grad", "freeze_bn",
                        "detach_direct_v", "detach_trajectory", "bn_reestimate")
 
 
