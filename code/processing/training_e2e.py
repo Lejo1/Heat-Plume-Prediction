@@ -263,6 +263,10 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
                         clip_grad_norm=args.get("clip_grad", 1.0),
                         pipeline_tap=tap if tap.enabled else None,
                         epoch_callback=make_v_blur_schedule(model, args))
+        # streamline distance to the simulated velocity's lines, logged every epoch as
+        # "train traj [cells]" / "val traj [cells]" (and in measurements.yaml) - also with
+        # lambda_traj 0, as a measure of what the run does to the lines
+        solver.metrics["traj [cells]"] = TrajectoryLoss(model)
         # Programmatic schedule instead of load_lr_schedule: the CSV fallback default_lr_schedule.csv
         # would silently drop the lr to 1e-5 at epoch 100, and a stale history file from a previous
         # run would be re-applied. Two ways to shape it, both off by default (constant lr):
@@ -451,18 +455,23 @@ def print_velocity_mae(unet_v, dataset_val, info_v, device):
 def evaluate_e2e(model, dataloader, info_T, device, info_v=None):
     """Paper-style metrics of the full e2e pipeline. Temperature metrics are computed in [degC]
     (de-normalized), SSIM on the normalized fields (same convention as eval_metrics.py).
-    With info_v given, also reports the velocity MAE in [m/y] (paper Step-1 ref: 22.3 / 32.7)."""
+    With info_v given, also reports the velocity MAE in [m/y] (paper Step-1 ref: 22.3 / 32.7).
+    "traj dist [cells]": mean equal-time distance between the streamlines traced in CNN1's and in
+    the simulated velocity (TrajectoryLoss), i.e. how far the predicted lines run off."""
     stats = info_T["Labels"]["Temperature [C]"]
     delta = stats["max"] - stats["min"]
     mse, mae, huber = MSELoss(), L1Loss(), HuberLoss()
     model.eval()
+    traj = TrajectoryLoss(model)
     collected = []
     with torch.no_grad():
         for x, y in dataloader:
-            pred = model(x.to(device)).cpu()
+            pred_dev = model(x.to(device))
+            pred = pred_dev.cpu()
             h, w = pred.shape[2:]
             i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
             y_crop = y[:, :, i0:i0+h, j0:j0+w]
+            traj_dist = float(traj(pred_dev, y_crop.to(device)))  # needs model.last_hp of this forward
             T_pred, T_label = pred[:, 0:1], y_crop[:, 0:1]
             pred_C, label_C = T_pred * delta + stats["min"], T_label * delta + stats["min"]
             metrics = {
@@ -473,6 +482,7 @@ def evaluate_e2e(model, dataloader, info_T, device, info_v=None):
                 "SSIM": float(SSIMLoss()(T_pred, T_label)),
                 "PAT0.1 [%]": float(PATLoss([0.1])(pred_C, label_C).mean()),
                 "PAT1.0 [%]": float(PATLoss([1.0])(pred_C, label_C).mean()),
+                "traj dist [cells]": traj_dist,
             }
             if info_v is not None:
                 for ch, name in [(1, "Liquid X-Velocity [m_per_y]"), (2, "Liquid Y-Velocity [m_per_y]")]:
