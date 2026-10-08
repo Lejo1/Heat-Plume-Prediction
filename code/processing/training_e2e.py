@@ -133,7 +133,13 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
             solver_v = Solver(model.unet_v, dataloaders_v["train"], dataloaders_v["val"],
                               loss_func=MSELoss(), finetune=True, learning_rate=args["lr"])
             solver_v.lr_schedule = {0: args["lr"]}
-            print(f"STAGE 1: velocity pretraining, {len(dataloaders_v['train'])} patch-batches/epoch, {args['stage1_epochs']} epochs")
+            # stage1_lr_schedule: {epoch: lr} merged on top, same semantics as the stage-2 lr_schedule,
+            # e.g. baseline_v's learning_rate_history.csv; unset = constant lr as before
+            for at_epoch, at_lr in (args.get("stage1_lr_schedule") or {}).items():
+                solver_v.lr_schedule[int(at_epoch)] = float(at_lr)
+            solver_v.lr_schedule = dict(sorted(solver_v.lr_schedule.items()))
+            print(f"STAGE 1: velocity pretraining, {len(dataloaders_v['train'])} patch-batches/epoch, {args['stage1_epochs']} epochs, "
+                  f"lr schedule {solver_v.lr_schedule}")
             stage1_time = datetime.now()
             try:
                 solver_v.train(args_stage1)

@@ -1,0 +1,62 @@
+pipeline: e2e
+case: train
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false  # full domain: with repeat_inner CNN1 crops 188 cells per side, so the 736^2 debug
+                   # window would leave only a 172^2 output (1-2 heat pumps). See preprocessing/subdomain.py.
+epochs: 500       # stage 2 (joint full-pipeline training; 1 optimizer step per epoch and datapoint)
+# model_v: seed CNN1 from an existing step-1 run instead of running stage 1 here (null = off).
+# Pins step 1 across experiments, which matters: the paper reports +-20% run-to-run spread on the
+# step-1 test MAE, so an unpinned CNN1 makes e2e runs incomparable to each other.
+#   ../../models/BEST_predict_v_v4   Pelzer's step-1 model
+#   ../runs/baseline_v               our own step-1 run
+model_v: null      # CNN1 uses repeat_inner (HPS_options.yaml) - BEST_predict_v_v4's weights do not fit
+                   # that architecture, so CNN1 is pretrained here in stage 1 instead
+stage1_epochs: 300 # stage 1: pretrain CNN1 on velocities with the partitioned dataset (len_box 512, skip 32:
+                   # 4096 patches = 205 batches/epoch); 300 as baseline_v, so its lr drops at 120/260 apply; 0 = skip
+stage1_lr_schedule:  # stage-1 lr by epoch, merged onto {0: lr}: baseline_v's learning_rate_history.csv
+  0: 0.0001
+  120: 0.00005
+  260: 0.00003
+lr_stage2: 0.0001
+lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_stage2 / lr_decay
+  0: 0.0001          # 1e-4 for the first 5 epochs - deliberately 10x the tuned rate, to push the
+  100: 0.00001
+inputs: pki
+model: null
+notes: end-to-end LGCNN from scratch as example_e2e, but CNN1 with repeat_inner (receptive field 361 instead of 173 cells, 20.3 M instead of 9.4 M weights), full domain
+# CNN2 keeps example_e2e's architecture (d4 f32 k5, no repeat): unet_args_T overrides only repeat_inner,
+# all other keys come from HPS_options.yaml like CNN1's
+unet_args_T:
+  repeat_inner: false
+outputs: t
+visualize: true
+randomK: true    # True for varyK datasets (flow main-direction switched)
+t_steps: 10000   # streamline samples; also caps the RK4 steps
+sigma: 1.0        # soft-drawing splat width in cells
+v_blur: 0.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
+v_blur_end: 0.0           # anneal target (null = constant v_blur)
+v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
+fade_mode: absolute  # streamline fading 1 - t/t_end (cut-invariant; "per_line" = legacy paper convention)
+clip_grad: 1.0   # cap on the gradient norm (exploding gradients through the streamlines)
+lambda_v: 0.01     # small velocity term (same loss type as T) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+val_loss: Huber    # validation loss, also selects the best epoch: MSE | MAE | Huber (delta 1.0), in the
+                   # same E2ELoss form as train_loss (HPS_options). Unset = same as the training loss.
+val_loss_with_v: false  # true = Huber(T) + lambda_v * Huber(v), false = Huber(T) only
+compile: true    # torch.compile the RK4 step (removes per-step CPU dispatch overhead); falls back to eager on failure
+detach_direct_v: false  # stop-gradient on CNN2's direct vx/vy channels -> CNN1's T-loss signal flows only through the streamlines
+detach_trajectory: true  # truncate the streamline gradient: each RK4 step blames only the velocity it sampled, no chain back along the line
+stage1_force: false    # true = retrain stage 1 even if a cached unet_v_pretrained.pt exists
+bn_reestimate: false   # after stage 1, recompute BatchNorm running stats on full-domain inputs (stage 1 trains CNN1 on 256^2 patches, stage 2 is full-domain); weights unchanged
+freeze_bn: none       # none | v | T | both: keep the BatchNorm layers of CNN1 (v) / CNN2 (T) in eval mode during stage 2,
+                      # so their running stats stay fixed (at the bn_reestimate values if that is on); gamma/beta still train
+grad_diag: true       # after stage 1, decompose CNN1's gradient into streamline vs direct routes + save a plot
+grad_diag_only: false  # stop right after the diagnostic (get the plot without running all stage-2 epochs)
+pipeline_plot_every: 25  # stage 2: every N optimizer steps save each stage's (CNN1/streamlines/CNN2) in- and output plus the loss gradients before/after it -> destination/pipeline_plots/; 0 = off
+pipeline_plot_max: 40    # cap on the number of such plots per run (0 = unlimited)
+order_data:
+- 0
+- 1
+- 2
