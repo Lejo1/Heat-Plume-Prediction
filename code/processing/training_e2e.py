@@ -251,7 +251,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
         tap = PipelineTap(every=args.get("pipeline_plot_every", 0),
                           destination=args["destination"],
                           max_plots=args.get("pipeline_plot_max", 0),
-                          t_stats=dataset_train.info_T["Labels"]["Temperature [C]"])
+                          t_stats=dataset_train.info_T["Labels"]["Temperature [C]"],
+                          traj_loss=train_loss_fct.traj, lambda_traj=train_loss_fct.lambda_traj)
         if tap.enabled:
             print(f"pipeline diagnostic: every {tap.every} optimizer steps"
                   + (f", at most {tap.max_plots} plots" if tap.max_plots > 0 else "")
