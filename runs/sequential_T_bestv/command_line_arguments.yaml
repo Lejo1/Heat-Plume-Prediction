@@ -1,0 +1,36 @@
+activation_fct: ReLU
+batchsize: 20
+bool_cutouts: true
+case: train
+data_prep: ../../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_BEST_predict_v_v4 RK45
+  # streamlines (hard-drawn) traced in BEST_predict_v_v4's PREDICTED velocity instead of the simulated one:
+  # step 3 trained sequentially on the lines it sees at inference (exposure bias). Inputs are stored
+  # cropped to CNN1's output (2372^2), labels full size - needs the center-crop fix in dataset_cuts_jit.py
+data_raw: ../datasets/dataset_giant_100hp_varyK
+depth: 4
+destination: ../runs/sequential_T_bestv
+device: cuda
+dilation: 1
+epochs: 50
+init_features: 32
+inputs: ixydkc
+kernel_size: 4
+len_box: 256
+lr: 0.00001  # step 3 trains at 1e-5, not 1e-4 (Optuna trial 21); load_hyperparams takes this from HPS_options.yaml anyway
+model: null
+norm: batchnorm
+notes: step 3 as baseline_T, trained from scratch on the streamlines from BEST_predict_v_v4's predicted velocity
+  (sequential training). Test run 2026-10-12 (S_seq_cnn2_bestv) gave classic chain test T MAE 0.0854 vs BEST_T 0.0902
+optimizer_switch: false
+order_data:
+- 0
+- 1
+- 2
+outputs: t
+repeat_inner: false
+skip_per_dir: 8
+stride: 1
+subdomain: false   # true = train/val/test on one hardcoded 736^2 window instead of the full 2560^2
+                   # field, for debugging. See preprocessing/subdomain.py.
+train_loss: MAE
+visualize: false

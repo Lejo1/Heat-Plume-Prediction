@@ -27,14 +27,14 @@ class SimulationDatasetCuts(DatasetBasis):
         self.inputs = self.inputs.permute(1,0,2,3)
         self.labels = self.labels.permute(1,0,2,3)
         assert len(self.inputs.shape) == 4, "inputs should be 4D (C,D,H,W), D = datapoints, C = channels, H = height, W = width"
-        assert self.inputs.shape[1:] == self.labels.shape[1:], "inputs and labels should have same shape"
-        
         self.spatial_size = self.inputs.shape[2:]
         self.n_dp = self.inputs.shape[1]
         if not self.inputs.shape[2:] == self.labels.shape[2:]:
             required_shape = self.spatial_size
             start_pos = [self.labels.shape[2]//2 - required_shape[0]//2, self.labels.shape[3]//2 - required_shape[1]//2]
             self.labels = self.labels[:, :, start_pos[0]:start_pos[0]+required_shape[0], start_pos[1]:start_pos[1]+required_shape[1]]
+        # checked after the center crop: a prep built from predicted velocities stores inputs cropped to CNN1's output
+        assert self.inputs.shape[1:] == self.labels.shape[1:], "inputs and labels should have same shape"
         self.box_size = np.array([box_size,box_size]) 
         self.box_out = np.array([0,0]).astype(int) 
         self.skip_per_dir = skip_per_dir
