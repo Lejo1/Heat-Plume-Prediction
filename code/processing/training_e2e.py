@@ -226,6 +226,29 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
         if args.get("grad_diag_only", False):
             return model
 
+    # freeze_weights: none | v | T keeps that net's weights fixed in stage 2 (requires_grad False, so
+    # Adam skips them). T: only CNN1 learns, from CNN2's error through the streamlines; v: only CNN2.
+    frozen_weights = args.get("freeze_weights") or "none"
+    assert frozen_weights in ("none", "v", "T"), f"freeze_weights must be none | v | T, got {frozen_weights!r}"
+    if frozen_weights != "none":
+        for p in (model.unet_v if frozen_weights == "v" else model.unet_T).parameters():
+            p.requires_grad_(False)
+        print(f"freeze_weights: {frozen_weights} - {'CNN1' if frozen_weights == 'v' else 'CNN2'}'s weights stay fixed in stage 2")
+    # cnn1_trainable: all | bn | bn_last | last - which part of CNN1 trains in stage 2. bn: only the
+    # BatchNorm affine gamma/beta; last: only the final 1x1 conv; bn_last: both. Few parameters, so CNN1
+    # has little capacity to memorize the single training sample.
+    cnn1_trainable = args.get("cnn1_trainable") or "all"
+    assert cnn1_trainable in ("all", "bn", "bn_last", "last"), f"cnn1_trainable must be all | bn | bn_last | last, got {cnn1_trainable!r}"
+    if cnn1_trainable != "all" and frozen_weights != "v":
+        keep = set() if cnn1_trainable == "last" else {
+            id(p) for m in model.unet_v.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm) for p in m.parameters()}
+        if cnn1_trainable in ("bn_last", "last"):
+            keep |= {id(p) for p in model.unet_v.conv.parameters()}
+        for p in model.unet_v.parameters():
+            p.requires_grad_(id(p) in keep)
+        n = sum(p.numel() for p in model.unet_v.parameters() if p.requires_grad)
+        print(f"cnn1_trainable: {cnn1_trainable} - {n:,} of {sum(p.numel() for p in model.unet_v.parameters()):,} CNN1 parameters train")
+
     # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
     if args["case"] in ["train", "finetune"]:
         # loss = L(T) + lambda_v * L_v(v); lambda_v=0 (or missing key) = pure temperature loss.
