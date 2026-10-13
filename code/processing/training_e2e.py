@@ -15,11 +15,12 @@ from torch.utils.data import DataLoader
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
 from processing.e2e_pipeline_plot import PipelineTap
-from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss, TrajectoryLoss
+from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss, TrajectoryLoss, FrameLoss, well_parameters
 from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.model import weights_init
 from processing.solver import Solver
 from processing.training import load_hyperparams, suggest_hyperparam
+from preprocessing import subdomain
 from utils.utils_args import load_yaml, save_yaml
 
 
@@ -87,6 +88,14 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
             model.load(args["model"], args["device"])
     if args["case"] == "test":
         model.eval()
+
+    # streamline-frame losses (FrameLoss): `frame` follows the run's seed_mode and enters the training
+    # loss with lambda_N / lambda_TOF; the two evaluators always write their metrics into
+    # measurements_test{,_start}.yaml, on the datapoint's heat-pump lines and on fixed random seeds
+    frames = build_frame_losses(args, model, dataset_train, PATH_DATA_PREP)
+    lambda_N = float(args.get("lambda_N") or 0.0)
+    lambda_TOF = float(args.get("lambda_TOF") or 0.0)
+    log_frame = bool(lambda_N or lambda_TOF or args.get("log_frame_metrics", False))
 
     if args["case"] == "train":
         # initialize both UNets ONCE here; the Solvers below run with finetune=True so that
@@ -205,11 +214,20 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
         if "test" in dataloaders:
             # same metrics as the end-of-run measurements_test.yaml, so the two files subtract
             metrics_start = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"],
-                                         info_v=dataset_train.info_v)
+                                         info_v=dataset_train.info_v, frame_evals=frames["evals"])
             save_yaml(metrics_start, args["destination"] / "measurements_test_start.yaml")
             print("Test-set metrics BEFORE stage 2:",
                   *[f"  {k}: {v:.4f}" for k, v in metrics_start.items()], sep="\n")
             visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e_start.png")
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    # per-term gradient norm at CNN1's output on the starting model, to balance lambda_N / lambda_TOF
+    # against the other terms by gradient norm rather than by loss value
+    if log_frame and args["case"] in ["train", "finetune"]:
+        x0, y0 = next(iter(dataloaders["train"]))
+        print_loss_gradient_norms(model, x0, y0, args, frames["train"], args["device"])
+        del x0, y0
         if "cuda" in str(args["device"]):
             torch.cuda.empty_cache()
 
@@ -261,12 +279,25 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
         # lambda_traj > 0 adds the streamline-position loss (TrajectoryLoss): CNN1's streamlines vs the
         # ones traced in the simulated velocity, training loss only
         lambda_traj = float(args.get("lambda_traj") or 0.0)
+        # lambda_N / lambda_TOF > 0 add the streamline-frame losses (FrameLoss) on CNN1's velocity;
+        # frame_loss_on_val: log (default) keeps them out of the validation loss, include adds them
+        frame_on = bool(lambda_N or lambda_TOF)
         train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"),
-                                 lambda_traj=lambda_traj, traj=TrajectoryLoss(model) if lambda_traj else None)
+                                 lambda_traj=lambda_traj, traj=TrajectoryLoss(model) if lambda_traj else None,
+                                 lambda_N=lambda_N, lambda_TOF=lambda_TOF, frame=frames["train"] if frame_on else None)
+        frame_on_val = args.get("frame_loss_on_val") or "log"
+        assert frame_on_val in ("log", "include"), f"frame_loss_on_val must be log | include, got {frame_on_val!r}"
+        frame_val = frame_on and frame_on_val == "include"
         val_loss_fct = None
         if args.get("val_loss"):
             val_loss_fct = E2ELoss(lambda_v=lambda_v if args.get("val_loss_with_v", True) else 0.0,
-                                   base=args["val_loss"])
+                                   base=args["val_loss"], lambda_N=lambda_N if frame_val else 0.0,
+                                   lambda_TOF=lambda_TOF if frame_val else 0.0,
+                                   frame=frames["train"] if frame_val else None)
+        elif frame_on and not frame_val:
+            # no separate val_loss: validation uses the training loss without the frame terms
+            val_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"),
+                                   lambda_traj=lambda_traj, traj=train_loss_fct.traj)
         print(f"STAGE 2 losses: train {train_loss_fct.name}, "
               f"val {(val_loss_fct if val_loss_fct is not None else train_loss_fct).name} (selects the best epoch)")
         # optional per-step pipeline diagnostic: every N optimizer steps, save each stage's
@@ -275,7 +306,8 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
                           destination=args["destination"],
                           max_plots=args.get("pipeline_plot_max", 0),
                           t_stats=dataset_train.info_T["Labels"]["Temperature [C]"],
-                          traj_loss=train_loss_fct.traj, lambda_traj=train_loss_fct.lambda_traj)
+                          traj_loss=train_loss_fct.traj, lambda_traj=train_loss_fct.lambda_traj,
+                          frame_loss=train_loss_fct.frame, lambda_N=lambda_N, lambda_TOF=lambda_TOF)
         if tap.enabled:
             print(f"pipeline diagnostic: every {tap.every} optimizer steps"
                   + (f", at most {tap.max_plots} plots" if tap.max_plots > 0 else "")
@@ -292,11 +324,15 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
                         finetune=True, learning_rate=lr2,
                         clip_grad_norm=args.get("clip_grad", 1.0),
                         pipeline_tap=tap if tap.enabled else None,
-                        epoch_callback=make_v_blur_schedule(model, args))
+                        epoch_callback=chain_callbacks(make_v_blur_schedule(model, args),
+                                                       frames["train"].set_epoch if log_frame else None))
         # streamline distance to the simulated velocity's lines, logged every epoch as
         # "train traj [cells]" / "val traj [cells]" (and in measurements.yaml) - also with
         # lambda_traj 0, as a measure of what the run does to the lines
         solver.metrics["traj [cells]"] = TrajectoryLoss(model)
+        if log_frame:  # "train L_N", "val L_N", ... per epoch (and in measurements.yaml)
+            for name in ("L_N", "L_TOF", "angle [deg]"):
+                solver.metrics[name] = frames["train"].metric(name)
         # Programmatic schedule instead of load_lr_schedule: the CSV fallback default_lr_schedule.csv
         # would silently drop the lr to 1e-5 at epoch 100, and a stale history file from a previous
         # run would be re-applied. Two ways to shape it, both off by default (constant lr):
@@ -337,7 +373,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
 
     if "test" in dataloaders:
         metrics_test = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"],
-                                    info_v=dataset_train.info_v)
+                                    info_v=dataset_train.info_v, frame_evals=frames["evals"])
         save_yaml(metrics_test, args["destination"] / "measurements_test.yaml")
         print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
         visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
@@ -443,6 +479,102 @@ def reestimate_bn_stats(model, dataloader, device, repeats: int = 1):
     return len(bns), n_passes
 
 
+def build_frame_losses(args, model, dataset_train, path_data_prep: Path) -> dict:
+    """The FrameLoss objects of one run, sharing one resolved eps / travel-time floor:
+    "train": the run's options (seed_mode etc.); enters the training loss and the per-epoch metrics.
+    "evals": {"hp": ..., "random": ...} for measurements_test{,_start}.yaml - the datapoint's heat-pump
+             lines (no offsets) and n_seeds fixed random seeds, with the run's other frame options.
+    Nothing is traced here; each object traces its lines on first use and caches them."""
+    options = {k: args[k] for k in FrameLoss.DEFAULTS if args.get(k) is not None}
+    _, y = dataset_train[0]
+    # physical simulated velocity [m/y] of the training datapoint, for frame_eps = "pX"
+    v_ref = y[1:3].float() * model.v_delta.cpu() + model.v_min.cpu()
+    origin = (subdomain.WINDOW[0], subdomain.WINDOW[2]) if subdomain.is_enabled() else (0, 0)
+    well = None
+    if options.get("well_mask_mode", FrameLoss.DEFAULTS["well_mask_mode"]) == "flow":
+        # the simulation inputs: data_raw itself, or the raw dataset next to the prep folder
+        name = Path(args["data_raw"]).name
+        candidates = [Path(args["data_raw"]), Path(path_data_prep).parent / "datasets" / name]
+        found = [c for c in candidates if (c / "inputs" / "settings.yaml").exists()]
+        assert found, f"well_mask_mode flow: no inputs/settings.yaml in {[str(c) for c in candidates]}"
+        well = well_parameters(found[0])
+        print(f"frame loss well mask (flow): Q {well['Q']:.0f} m^3/y, b {well['b']} m, phi {well['phi']}")
+    common = dict(eps_reference=v_ref, raw_origin=origin, field_shape=tuple(y.shape[1:]), well_params=well,
+                  shared={})
+    frames = {"train": FrameLoss(model, **common, **options),
+              "evals": {"hp": FrameLoss(model, **common, **{**options, "seed_mode": "hp", "seed_hp_offsets": False}),
+                        "random": FrameLoss(model, **common, **{**options, "seed_mode": "random"})}}
+    del y
+    return frames
+
+
+def chain_callbacks(*fns):
+    """One epoch callback from several (None entries are skipped); None if there is none."""
+    fns = [f for f in fns if f is not None]
+    if len(fns) <= 1:
+        return fns[0] if fns else None
+
+    def run(epoch):
+        for f in fns:
+            f(epoch)
+    return run
+
+
+def print_loss_gradient_norms(model, x, y, args, frame, device):
+    """||dL_term/dv_norm|| at CNN1's output for every loss term, on the stage-2 starting model: raw
+    (lambda 1) and multiplied by the run's lambda. Meant for balancing lambda_N / lambda_TOF by gradient
+    norm. Eval-mode BatchNorm, as in the gradient diagnostic (no running-stat update).
+    Two forwards: a backward through the compiled RK4 step may run only once and without retain_graph,
+    so the T loss gets the full pipeline's graph alone. The velocity terms then use a second graph of
+    CNN1 only, with the T channel of the first forward detached (model.last_hp stays from that forward),
+    and the trajectory term (its own RK4 trace) comes last."""
+    was_training = model.training
+    model.eval()
+    base, base_v = args["train_loss"].lower(), (args.get("v_loss") or args["train_loss"]).lower()
+
+    def forward():
+        pred = model(x)
+        h, w = pred.shape[2:]
+        i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
+        return pred, model.tapped["v_norm"], y[:, :, i0:i0 + h, j0:j0 + w]
+
+    def grad_norm(term, v_norm, retain):
+        (g,) = torch.autograd.grad(term, v_norm, retain_graph=retain, allow_unused=True)
+        return float(torch.nan_to_num(g).norm()) if g is not None else 0.0
+
+    results = {}
+    model.capture_intermediates = True
+    try:
+        x, y = x.to(device), y.to(device)
+        pred, v_norm, y_crop = forward()
+        term = E2ELoss.BASES[base]()(pred[:, 0:1], y_crop[:, 0:1])
+        results["T loss"] = (1.0, float(term.detach()), grad_norm(term, v_norm, False))
+        T_pred = pred[:, 0:1].detach()
+        del pred, v_norm, term
+        model.tapped = {}
+        v_norm = model.unet_v(x)  # same values as in the forward above (eval mode)
+        ht, wt = T_pred.shape[2:]
+        it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2  # the model's crop to T's size
+        pred = torch.cat([T_pred, v_norm[:, :, it:it + ht, jt:jt + wt]], dim=1)
+        f = frame(pred, y_crop)
+        items = [("v loss", float(args.get("lambda_v", 0.0) or 0.0), lambda: E2ELoss.BASES[base_v]()(pred[:, 1:3], y_crop[:, 1:3])),
+                 ("L_N", float(args.get("lambda_N") or 0.0), lambda: f["L_N"]),
+                 ("L_TOF", float(args.get("lambda_TOF") or 0.0), lambda: f["L_TOF"]),
+                 ("traj", float(args.get("lambda_traj") or 0.0), lambda: TrajectoryLoss(model)(pred, y_crop))]
+        for k, (name, lam, make_term) in enumerate(items):
+            term = make_term()
+            results[name] = (lam, float(term.detach()), grad_norm(term, v_norm, k < len(items) - 1))
+    finally:
+        model.capture_intermediates = False
+        model.tapped = {}
+        model.train(was_training)
+    print(f"Loss terms at the stage-2 start (seed_mode {frame.opt['seed_mode']}, eval-mode BatchNorm): "
+          f"value | ||d term / d v_norm|| at CNN1's output, raw and x lambda")
+    for name in ("T loss", "v loss", "traj", "L_N", "L_TOF"):
+        lam, value, g_norm = results[name]
+        print(f"  {name:7s} {value:.4e} | raw {g_norm:.3e}   x lambda {lam:g} = {lam * g_norm:.3e}")
+
+
 def make_v_blur_schedule(model, args):
     """Annealing of the tracer's velocity smoothing: fn(epoch) -> None, or None if not needed.
 
@@ -482,12 +614,14 @@ def print_velocity_mae(unet_v, dataset_val, info_v, device):
         print(f"  stage-1 val MAE v{'x' if ch == 0 else 'y'}: {float((v_pred[:, ch] - y_crop[:, ch]).abs().mean() * delta):.1f} m/y")
 
 
-def evaluate_e2e(model, dataloader, info_T, device, info_v=None):
+def evaluate_e2e(model, dataloader, info_T, device, info_v=None, frame_evals=None):
     """Paper-style metrics of the full e2e pipeline. Temperature metrics are computed in [degC]
     (de-normalized), SSIM on the normalized fields (same convention as eval_metrics.py).
     With info_v given, also reports the velocity MAE in [m/y] (paper Step-1 ref: 22.3 / 32.7).
     "traj dist [cells]": mean equal-time distance between the streamlines traced in CNN1's and in
-    the simulated velocity (TrajectoryLoss), i.e. how far the predicted lines run off."""
+    the simulated velocity (TrajectoryLoss), i.e. how far the predicted lines run off.
+    frame_evals {name: FrameLoss}: adds "L_N <name>", "L_TOF <name>" and "angle [deg] <name>" (direction
+    and travel-time error of CNN1's velocity on the true streamlines of those seeds)."""
     stats = info_T["Labels"]["Temperature [C]"]
     delta = stats["max"] - stats["min"]
     mse, mae, huber = MSELoss(), L1Loss(), HuberLoss()
@@ -502,6 +636,10 @@ def evaluate_e2e(model, dataloader, info_T, device, info_v=None):
             i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
             y_crop = y[:, :, i0:i0+h, j0:j0+w]
             traj_dist = float(traj(pred_dev, y_crop.to(device)))  # needs model.last_hp of this forward
+            frame_metrics = {}
+            for seeds, frame in (frame_evals or {}).items():  # also reads model.last_hp of this forward
+                for name, value in frame(pred_dev, y_crop.to(device)).items():
+                    frame_metrics[f"{name} {seeds}"] = float(value)
             T_pred, T_label = pred[:, 0:1], y_crop[:, 0:1]
             pred_C, label_C = T_pred * delta + stats["min"], T_label * delta + stats["min"]
             metrics = {
@@ -513,6 +651,7 @@ def evaluate_e2e(model, dataloader, info_T, device, info_v=None):
                 "PAT0.1 [%]": float(PATLoss([0.1])(pred_C, label_C).mean()),
                 "PAT1.0 [%]": float(PATLoss([1.0])(pred_C, label_C).mean()),
                 "traj dist [cells]": traj_dist,
+                **frame_metrics,
             }
             if info_v is not None:
                 for ch, name in [(1, "Liquid X-Velocity [m_per_y]"), (2, "Liquid Y-Velocity [m_per_y]")]:

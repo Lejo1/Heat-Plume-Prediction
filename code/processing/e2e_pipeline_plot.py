@@ -31,8 +31,10 @@ Reading the gradient panels
                               consumer of that crop. Both terms add up in its .grad, so the tap
                               recomputes the trajectory term alone on a detached copy of v_out (one
                               extra trace pair + backward) and the velocity loss is the remainder
-  CNN1 sources  (bar chart)  : dL/dv_norm split into velocity loss, trajectory loss, sf, sf_outer and
-                              direct route, each as its share of the sum of the five L2 norms
+  CNN1 sources  (bar chart)  : dL/dv_norm split into velocity loss, trajectory loss, frame losses
+                              L_N and L_TOF, sf, sf_outer and direct route, each as its share of the
+                              sum of the L2 norms. L_N / L_TOF are recomputed alone like the
+                              trajectory term (cheap: their true lines are cached)
   dL/dx         before CNN1 : input sensitivity, only populated because the tap sets
                               x.requires_grad_(True) for the armed step
 
@@ -90,15 +92,21 @@ class PipelineTap:
     t_stats:   info_T["Labels"]["Temperature [C]"] - de-normalizes the T panels to [degC]
     traj_loss, lambda_traj: the training loss's TrajectoryLoss and its weight, so the trajectory term
                can be split off the velocity-loss route (None / 0 = no trajectory loss in training)
+    frame_loss, lambda_N, lambda_TOF: the same for the streamline-frame losses (FrameLoss)
     """
 
     def __init__(self, every: int, destination: Path, max_plots: int = 0, t_stats: Optional[dict] = None,
-                 traj_loss=None, lambda_traj: float = 0.0):
+                 traj_loss=None, lambda_traj: float = 0.0, frame_loss=None, lambda_N: float = 0.0,
+                 lambda_TOF: float = 0.0):
         self.every = int(every or 0)
         self.max_plots = int(max_plots or 0)
         self.t_stats = t_stats
         self.traj_loss = traj_loss
         self.lambda_traj = float(lambda_traj or 0.0)
+        # auxiliary terms on the cropped velocity output: name -> (lambda, fn(pred, label) -> scalar)
+        self.aux = {"traj": (self.lambda_traj, traj_loss),
+                    "frame_N": (float(lambda_N or 0.0), (lambda p, l: frame_loss(p, l)["L_N"]) if frame_loss else None),
+                    "frame_TOF": (float(lambda_TOF or 0.0), (lambda p, l: frame_loss(p, l)["L_TOF"]) if frame_loss else None)}
         self.dir = Path(destination) / "pipeline_plots"
         self.csv = self.dir / "pipeline_scalars.csv"
         self.step = 0
@@ -144,13 +152,14 @@ class PipelineTap:
             model.tapped = {}
 
     # ---------------------------------------------------------------- scalars
-    def _traj_grad(self, model, tap, y_label) -> Optional[torch.Tensor]:
-        """lambda_traj * d(trajectory loss)/d(v_out), recomputed alone on a detached copy of v_out.
-        Zeros when training has no trajectory loss; None when it cannot be recomputed (missing
-        tensors or out of memory) - the velocity-loss route then still contains it.
-        TrajectoryLoss reads the heat pumps of this forward from model.last_hp, so it sees exactly
-        the lines of the training loss."""
-        if not self.lambda_traj or self.traj_loss is None:
+    def _aux_grad(self, model, tap, y_label, name: str) -> Optional[torch.Tensor]:
+        """lambda * d(term)/d(v_out) of one auxiliary term (traj, frame_N, frame_TOF), recomputed alone
+        on a detached copy of v_out. Zeros when training does not use that term; None when it cannot
+        be recomputed (missing tensors or out of memory) - the velocity-loss route then still contains it.
+        TrajectoryLoss and FrameLoss read the heat pumps of this forward from model.last_hp, so they
+        see exactly the lines of the training loss."""
+        lam, fn = self.aux[name]
+        if not lam or fn is None:
             return torch.zeros_like(tap["v_out"])
         if y_label is None or "T_pred" not in tap:
             return None
@@ -158,21 +167,21 @@ class PipelineTap:
             v_leaf = tap["v_out"].detach().requires_grad_(True)
             with torch.enable_grad():
                 pred = torch.cat([tap["T_pred"].detach(), v_leaf], dim=1)  # [T, vx, vy] as in the loss
-                term = self.lambda_traj * self.traj_loss(pred, y_label.detach())
+                term = lam * fn(pred, y_label.detach())
                 (g,) = torch.autograd.grad(term, v_leaf, allow_unused=True)
             return g if g is not None else torch.zeros_like(v_leaf)
         except torch.cuda.OutOfMemoryError:
-            print("  [pipeline plot] out of memory in the trajectory-loss re-trace - velocity and "
-                  "trajectory loss shown as one route")
+            print(f"  [pipeline plot] out of memory recomputing {name} - it stays in the velocity-loss route")
             torch.cuda.empty_cache()
             return None
 
     def _cnn1_routes(self, model, tap, grads, y_label=None) -> Dict[str, Optional[torch.Tensor]]:
-        """dL/dv_norm at CNN1's output split into its five sources, in normalized-velocity units.
+        """dL/dv_norm at CNN1's output split into its sources, in normalized-velocity units.
 
-          vloss    : .grad of the cropped velocity output minus the trajectory part = lambda_v * dL(v)
-          traj     : lambda_traj * d(trajectory loss)/dv, recomputed alone (see _traj_grad). Both
-                     terms consume the cropped velocity output, so their gradients add up in its .grad
+          vloss    : .grad of the cropped velocity output minus the auxiliary parts = lambda_v * dL(v)
+          traj     : lambda_traj * d(trajectory loss)/dv, recomputed alone (see _aux_grad)
+          frame_N, frame_TOF : lambda_N * dL_N/dv and lambda_TOF * dL_TOF/dv, likewise. All these terms
+                     consume the cropped velocity output, so their gradients add up in its .grad
           sf       : streamline route through the centre lines = dL/dv_phys minus the outer part
           sf_outer : streamline route through the offset lines. Both line groups are traced in one
                      batched RK4 call and their gradients merge in the shared velocity grid, so this
@@ -180,17 +189,18 @@ class PipelineTap:
                      the re-traced sf_outer back to it (the training graph is already freed)
           direct   : x_T's velocity channels, or 0 when detach_direct_v cuts them off before CNN1
         If the re-trace runs out of memory, sf holds the whole streamline route and sf_outer is None
-        (likewise vloss holds both auxiliary terms and traj is None).
+        (likewise vloss holds an auxiliary term that could not be recomputed, which is then None).
         """
         if "v_norm" not in tap:
-            return {"vloss": None, "traj": None, "sf": None, "sf_outer": None, "direct": None}
+            return {"vloss": None, **{k: None for k in self.aux}, "sf": None, "sf_outer": None, "direct": None}
         g_vout = grads.get("v_out")
         g_vout = g_vout if g_vout is not None else (torch.zeros_like(tap["v_out"]) if "v_out" in tap else None)
-        g_traj = self._traj_grad(model, tap, y_label) if g_vout is not None else None
-        if g_traj is None:
-            routes = {"vloss": g_vout, "traj": None}
-        else:
-            routes = {"vloss": g_vout - g_traj, "traj": g_traj}
+        routes = {"vloss": g_vout}
+        for name in self.aux:
+            g_aux = self._aux_grad(model, tap, y_label, name) if g_vout is not None else None
+            routes[name] = g_aux
+            if g_aux is not None:
+                routes["vloss"] = routes["vloss"] - g_aux
 
         g_phys = grads.get("v_phys")
         g_phys = g_phys if g_phys is not None else torch.zeros_like(tap["v_phys"])
@@ -237,8 +247,9 @@ class PipelineTap:
         if routes["sf_outer"] is not None:
             recon = recon + _sanitize(routes["sf_outer"])
         g_v = _sanitize(routes["vloss"])
-        if routes.get("traj") is not None:
-            g_v = g_v + _sanitize(routes["traj"])
+        for name in ("traj", "frame_N", "frame_TOF"):
+            if routes.get(name) is not None:
+                g_v = g_v + _sanitize(routes[name])
         ht, wt = g_v.shape[2:]
         it, jt = (recon.shape[2] - ht) // 2, (recon.shape[3] - wt) // 2
         recon[:, :, it:it+ht, jt:jt+wt] += g_v
@@ -273,10 +284,11 @@ class PipelineTap:
         if grads.get("v_phys") is not None:
             _, s["grad_v_stream_in_norm_units"] = _norms(_sanitize(grads["v_phys"]) * model.v_delta)
 
-        # sources of CNN1's gradient: L2 norm per route and its share of the sum of the five norms
+        # sources of CNN1's gradient: L2 norm per route and its share of the sum of all route norms
         # (same convention as sf_share_at_cnn2_input)
         s["sf_outer_split"] = float(routes["sf_outer"] is not None)
         s["traj_split"] = float(routes.get("traj") is not None)
+        s["frame_split"] = float(routes.get("frame_N") is not None and routes.get("frame_TOF") is not None)
         norms = {k: (_norms(g)[1] if g is not None else float("nan")) for k, g in routes.items()}
         total = sum(v for v in norms.values() if np.isfinite(v))
         for k, v in norms.items():
@@ -382,12 +394,14 @@ class PipelineTap:
         return to_np(pred), to_np(label), unit
 
     def _cnn1_route_bars(self, ax, stats):
-        """Sources of the gradient CNN1 receives, each as its share of the sum of the five L2 norms
+        """Sources of the gradient CNN1 receives, each as its share of the sum of the route L2 norms
         at CNN1's output. With detach_direct_v the direct route is 0 here by construction (hatched)."""
         split = bool(stats.get("sf_outer_split", 0.0))
-        traj_split = bool(stats.get("traj_split", 0.0))
-        keys = [("vloss", "velocity\nloss" if traj_split else "velocity +\ntraj loss\n(not split)"),
+        aux_split = bool(stats.get("traj_split", 0.0)) and bool(stats.get("frame_split", 1.0))
+        keys = [("vloss", "velocity\nloss" if aux_split else "velocity +\naux. losses\n(not split)"),
                 ("traj", "trajectory\nloss"),
+                ("frame_N", "frame\nL_N"),
+                ("frame_TOF", "frame\nL_TOF"),
                 ("sf", "sf\n(streamline)" if split else "sf + sf_outer\n(not split)"),
                 ("sf_outer", "sf_outer\n(streamline)"),
                 ("direct", "vx,vy\n(direct)")]
@@ -398,13 +412,14 @@ class PipelineTap:
         detach = bool(stats.get("detach_direct_v", 0.0))
         pct = [v * 100 if np.isfinite(v) else 0.0 for v in shares]
         bars = ax.bar([lbl for _, lbl in keys], pct,
-                      color=["#5b8c3a", "#7b4fa0", "#c1440e", "#e8a33d", "#c9d3db" if detach else "#2a7fb8"])
+                      color=["#5b8c3a", "#7b4fa0", "#a05f8c", "#4f7ba0", "#c1440e", "#e8a33d",
+                             "#c9d3db" if detach else "#2a7fb8"])
         if detach:
-            bars[4].set_hatch("//")
+            bars[-1].set_hatch("//")
         ax.set_ylim(0, 125)  # headroom for the value labels
         ax.set_ylabel("share of CNN1's gradient [%]")
         ax.tick_params(axis="x", labelsize=8)
-        ax.set_title("gradient sources at CNN1's output\n||dL/dv_norm|| per route / sum of the five"
+        ax.set_title("gradient sources at CNN1's output\n||dL/dv_norm|| per route / sum of all routes"
                      + ("\n(direct route BLOCKED: detach_direct_v)" if detach else ""), fontsize=9)
         for i, ((k, _), share) in enumerate(zip(keys, shares)):
             label = (f"{share*100:.1f}%\n{stats.get(f'grad_cnn1_{k}', float('nan')):.1e}"
@@ -461,7 +476,8 @@ class PipelineTap:
         lines += ["", "gradient sources at CNN1's output", "-" * 46]
         lines += [f"  {name:<14} {stats.get(f'grad_cnn1_{k}', float('nan')):.3e}  "
                   f"{stats.get(f'share_cnn1_{k}', float('nan')) * 100:5.1f}%"
-                  for k, name in (("vloss", "velocity loss"), ("traj", "trajectory loss"), ("sf", "sf"),
+                  for k, name in (("vloss", "velocity loss"), ("traj", "trajectory loss"), ("frame_N", "frame L_N"),
+                                  ("frame_TOF", "frame L_TOF"), ("sf", "sf"),
                                   ("sf_outer", "sf_outer"), ("direct", "direct"))]
         lines.append(f"  split residual {stats.get('grad_cnn1_split_residual', float('nan')):.1e}")
         lines += ["", "parameter gradients", "-" * 46,

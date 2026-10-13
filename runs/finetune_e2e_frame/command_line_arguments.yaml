@@ -1,0 +1,117 @@
+pipeline: e2e
+case: finetune   # load pretrained weights and keep them (no re-initialization)
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false   # true = train/val/test on one hardcoded 736^2 window instead of the full 2560^2
+                   # field (12x cheaper, for debugging). See preprocessing/subdomain.py.
+                   # Losses and metrics of a windowed run are not comparable to full-domain ones.
+
+# --- where the two baselines come from -------------------------------------------------------
+# Instead of one end-to-end checkpoint (model:), CNN1 and CNN2 are seeded from the two separately
+# trained baseline runs. Paths are relative to the code/ directory and follow the same convention
+# as those runs' own destination (../runs/<name>); if your checkpoints are the archived copies in
+# Bachelorarbeit/runs, use ../../runs/<name> instead. A missing model.pt fails immediately with
+# the full path, so this is a one-line fix rather than a silent fallback.
+model: null
+# Swap these for Pelzer's own models to finetune HER two-stage pipeline instead of ours (both are
+# architecture-compatible, verified, and share our datasets' normalization stats):
+model_v: ../../models/BEST_predict_v_v4
+model_T: ../../models/BEST_predict_T_add_s_outer
+#model_v: ../runs/baseline_v   # step 1: pki -> vx, vy    (kernel_size 5, MSE)
+#model_T: ../runs/baseline_T   # step 3: ixydk+s_outer -> T (kernel_size 4, MAE)
+
+# baseline_v was tuned with kernel_size 5, baseline_T with kernel_size 4, so CNN2 cannot share
+# CNN1's architecture. HPS_options.yaml holds CNN1's; this overrides only what differs for CNN2.
+unet_args_T:
+  kernel_size: 4
+
+epochs: 100        # joint end-to-end finetuning (1 optimizer step per epoch and datapoint)
+stage1_epochs: 0   # no velocity pretraining: baseline_v already IS the pretrained CNN1
+inputs: pki
+outputs: t
+notes: finetune_e2e plus the streamline-frame losses L_N and L_TOF on the heat-pump lines
+visualize: true
+randomK: true      # True for varyK datasets (flow main-direction switched)
+
+# --- streamline channel: must resemble what baseline_T was trained on ------------------------
+# baseline_T learned from "dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t", whose
+# streamline channels are HARD-drawn by LGCNN_step2.py: one cell wide, per-line fading, values in
+# [0, 1]. Measured on Inputs/RUN_1.pt: sf covers 1.42% of cells, mean 0.52 on those cells, max 1.0
+# (sf_outer 2.74%, mean 0.52, max 1.57 where two offset lines overlap).
+# The differentiable soft drawing spreads that over ~4*sigma+1 cells and saturates through
+# 1 - exp(-density), so the on-line value is ~1 - exp(-fade/(sqrt(2*pi)*sigma)) instead of fade.
+# sigma=1.0 keeps the plume ~5 cells wide at ~1/3 the amplitude - the closest usable compromise.
+# It is also the largest sigma that stays on the splat path within a sensible memory budget.
+# NOT the 10.0 of the from-scratch experiments: that is a channel CNN2 has never seen.
+t_steps: 10000     # streamline samples; also caps the RK4 steps
+sigma: 1.0         # soft-drawing splat width in cells. MUST stay < SIGMA_BLUR_MIN (1.5)
+                   # or the rasterizer falls back to the blur path, whose gradient is
+                   # ~125x rougher; 1.0 also keeps the splat window at 9 (8.6 GiB).
+fade_mode: absolute 
+
+# --- optimization ----------------------------------------------------------------------------
+lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_stage2 / lr_decay
+  0: 0.00001         
+clip_grad: 10000.0  # cap on the gradient norm (exploding gradients through the streamlines); high, so it only
+                    # catches real explosions - with lambda_traj the normal gradient norm is O(1..10)
+lambda_traj: 0 # streamline-position loss: mean distance [cells] between CNN1's and the simulated velocity's
+                   # centre streamlines (full adjoint); training loss only, 0 = off. Its CNN1 gradient is
+                   # ~4e3 x lambda vs ~1 for the T loss (full adjoint), so ~1e-4..1e-3 keeps both in play;
+                   # lambda 1 makes the T loss irrelevant. Logged as train/val traj [cells] either way.
+# --- streamline-frame losses (FrameLoss, see WhatSoFar.md) ------------------------------------
+# CNN1's velocity sampled on the TRUE streamlines (traced once in the simulated velocity, no RK4
+# adjoint): L_N = normal (direction) error, L_TOF = log travel-time error along the line.
+# Start-state gradient norms at CNN1's output (BEST_V + BEST_T, full domain, data 0, eval-mode BN):
+# T loss 3.7e-3 | L_N raw 3.0e-3 (hp) / 2.4e-3 (random) | L_TOF raw 1.25e-2 (hp) / 5.1e-3 (random)
+# | traj raw 33.5 (x 3e-4 = 1.0e-2). The lambdas below give each frame term about the T loss's norm.
+lambda_N: 1.0                # 0 = off
+lambda_TOF: 0.3              # 0 = off
+seed_mode: hp                # hp | random | both
+n_seeds: 200                 # random seeds (random / both)
+seed_hp_offsets: false       # hp seeds: add the model's +-10-cell offset variants
+resample_seeds_each_epoch: true  # training random seeds redrawn every epoch; val/test fixed by seed_rng
+seed_rng: 0
+frame_ds_cells: 0.5          # arc-length spacing of the true-line nodes [cells]
+frame_eps: p5                # [m/y] or "pX" = X-th percentile of |v*| on the training datapoint (p5 = 45 m/y)
+tof_floor:                   # [m/y] floor delta of the travel time, empty = frame_eps / 10
+tof_checkpoint_cells: 50     # travel-time checkpoints every N cells of arc length (+ line end)
+well_mask_mode: fixed        # fixed | flow: drop nodes within r_w of any heat pump
+well_mask_radius: 5          # fixed: r_w [cells]
+well_mask_c: 1.0             # flow: r_w = max(2, c * Q / (b * phi * |v*|)), Q, b, phi from the simulation
+seed_max_length_cells:       # empty = trace to t_end
+frame_loss_on_val: log       # log: val loss without the frame terms (logged only) | include
+log_frame_metrics: true      # per-epoch train/val L_N, L_TOF, angle (also on when a lambda > 0)
+lambda_v: 0.01     # small velocity term (loss type: v_loss in HPS_options, default = T loss) anchors CNN1 near baseline_v instead of letting the T loss drift it away; 0 = pure T loss
+val_loss: Huber    # validation loss, also selects the best epoch: MSE | MAE | Huber (delta 1.0), in the
+                   # same E2ELoss form as train_loss (HPS_options). Unset = same as the training loss.
+val_loss_with_v: false  # true = Huber(T) + lambda_v * Huber(v), false = Huber(T) only
+detach_direct_v: true   # route D OFF: with it on, detach_trajectory pushes the streamline route
+                        # to ~1% of CNN1's gradient and the run measures the direct bypass instead
+                        # (that is what drifted v to 36/55 m/y). Off => route S is 100%.
+detach_trajectory: false  # THE VARIABLE UNDER TEST (supervisor's proposal): each RK4 step blames
+                         # only the velocity it sampled, no chain back along the line.
+                         # Flip to false for the control arm; change NOTHING else.
+compile: true      # torch.compile the RK4 step; falls back to eager on failure
+stage1_force: false
+bn_reestimate: false  # recompute BatchNorm running stats on full-domain inputs before stage 2 (both baselines were trained on 256^2 patches); weights unchanged
+freeze_bn: v          # none | v | T | both: keep the BatchNorm layers of CNN1 (v) / CNN2 (T) in eval mode during stage 2,
+                      # so their running stats stay fixed (at the bn_reestimate values if that is on); gamma/beta still train
+
+# --- diagnostics -----------------------------------------------------------------------------
+grad_diag: true        # decompose CNN1's gradient into streamline vs direct routes + save a plot
+grad_diag_only: false  # false = actually run the finetuning
+pipeline_plot_every: 5  # every N optimizer steps: each stage's in/out + the loss gradients around it
+pipeline_plot_max: 40    # cap on the number of such plots (0 = unlimited)
+
+# blur
+v_blur: 1.0            # Gaussian smoothing of the velocity field the tracer reads, in cells (0 = off)
+v_blur_end: 1.0           # anneal target (null = constant v_blur)
+v_blur_anneal_epochs:  # epochs to anneal over (null = all `epochs`)
+
+
+order_data:
+- 0
+- 1
+- 2

@@ -78,6 +78,9 @@ class LGCNNEndToEnd(Model):
         # heat-pump positions of the last forward in OUTPUT coordinates (one [n, 2] tensor per
         # sample): the trajectory loss traces its lines in the region predictions/labels cover
         self.last_hp = []
+        # the same, unfiltered: pumps just outside the output region still shape the flow inside it
+        # (the frame loss masks nodes near ANY pump)
+        self.last_hp_all = []
         self.tapped = {}
 
     def frozen_bn_layers(self):
@@ -206,8 +209,9 @@ class LGCNNEndToEnd(Model):
         it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2
         v_out = self._tap("v_out", v_norm[:, :, it:it+ht, jt:jt+wt])
         offset = torch.tensor([it, jt], dtype=torch.float32, device=x.device)
-        self.last_hp = []
+        self.last_hp, self.last_hp_all = [], []
         for b in range(x.shape[0]):
             hp = self.heat_pump_positions(x_crop[b, self.IDX_I]) - offset
+            self.last_hp_all.append(hp)
             self.last_hp.append(hp[(hp[:, 0] >= 0) & (hp[:, 0] < ht) & (hp[:, 1] >= 0) & (hp[:, 1] < wt)])
         return torch.cat([T_pred, v_out], dim=1)
