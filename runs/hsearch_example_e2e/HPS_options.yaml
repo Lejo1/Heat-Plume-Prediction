@@ -1,10 +1,13 @@
 # Search space of the from-scratch e2e search. Forms per key:
 #   values: [...]              categorical
 #   low/high (+ log:, step:)   range; int when both bounds are ints, else float
-# No architecture is searched: CNN1 must keep baseline_v's values (block at the end) or model_v no
-# longer loads, and CNN2 is fixed to the paper's best step-3 architecture via unet_args_T in
-# command_line_arguments.yaml. A fixed architecture also keeps CNN2's output - and with it the area
-# the val loss is computed on - identical across trials, so trials stay comparable.
+# Both nets start new in every trial: CNN1 gets stage 1 (velocity pretraining on data-0 patches,
+# see command_line_arguments.yaml), CNN2 is randomly initialized. Their architectures are searched
+# separately, with the ranges of the paper's LGCNN random-k search (APPENDIX, tab:params), except
+# init_features, which stops at 64: 128 does not fit a full-domain e2e step on a 24 GB card
+# (out-of-memory trials are pruned by run_e2e).
+# Depth and kernel size change the output area (valid convolutions), so trials compute the val loss
+# on areas of different size - accepted, as in the paper's per-step search.
 
 # --- stage-2 / streamline parameters (searched) ---------------------------------------------------
 lr:
@@ -36,13 +39,35 @@ detach_trajectory:
 bn_reestimate:
   values: [true, false]
 
-# --- CNN1 architecture: fixed to baseline_v (model_v), do NOT search ------------------------------
-kernel_size:
-  values: [5]
+# --- streamline-frame losses (searched; the other frame options are fixed in command_line_arguments) ---
+lambda_N:            # finetune controls 2026-10-14: 1 good, 10 lets the speed drift
+  low: 0.1
+  high: 10.0
+  log: true
+lambda_TOF:
+  low: 0.03
+  high: 3.0
+  log: true
+seed_mode:
+  values: [hp, random, both]
+
+# --- CNN1 architecture (searched, paper step 1: depth 4, 32 features, kernel 5) -------------------
 depth:
-  values: [4]
+  values: [1, 2, 3, 4]
 init_features:
-  values: [32]
+  values: [8, 16, 32, 64]
+kernel_size:
+  values: [3, 4, 5]
+
+# --- CNN2 architecture (searched, written into unet_args_T; paper step 3: depth 4, 32, kernel 4) --
+depth_T:
+  values: [1, 2, 3, 4]
+init_features_T:
+  values: [8, 16, 32, 64]
+kernel_size_T:
+  values: [3, 4, 5]
+
+# --- fixed (shared by both nets; patch parameters only affect stage 1) ----------------------------
 stride:
   values: [1]
 dilation:

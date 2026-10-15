@@ -381,11 +381,16 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
 
 
 # Hyperparameters an e2e search may vary. The first group lives in HPS_options.yaml (training_e2e
-# reads it back through load_hyperparams), the second in command_line_arguments.yaml. Architecture
-# keys stay out: in the finetune case the baseline checkpoints have to keep loading.
-E2E_SEARCH_KEYS_HPS = ("lr", "train_loss", "v_loss")
+# reads it back through load_hyperparams), the second in command_line_arguments.yaml. The CNN1
+# architecture keys (depth, init_features, kernel_size) may only take one value in the finetune case,
+# where the baseline checkpoints have to keep loading; a from-scratch search (case train, no model_v)
+# can vary them. E2E_SEARCH_KEYS_CNN2 are CNN2's architecture keys: drawn like the others and written
+# into unet_args_T, so CNN2 can get its own architecture (as the separately tuned step 3 in the paper).
+E2E_SEARCH_KEYS_HPS = ("lr", "train_loss", "v_loss", "depth", "init_features", "kernel_size")
 E2E_SEARCH_KEYS_CLA = ("v_blur", "sigma", "lambda_v", "lambda_traj", "clip_grad", "freeze_bn",
-                       "detach_direct_v", "detach_trajectory", "bn_reestimate")
+                       "detach_direct_v", "detach_trajectory", "bn_reestimate",
+                       "lambda_N", "lambda_TOF", "seed_mode")
+E2E_SEARCH_KEYS_CNN2 = {"depth_T": "depth", "init_features_T": "init_features", "kernel_size_T": "kernel_size"}
 
 
 def run_e2e(trial, args: Dict, PATH_DATA_PREP: Path):
@@ -404,10 +409,25 @@ def run_e2e(trial, args: Dict, PATH_DATA_PREP: Path):
 
     drawn = {}
     for key in E2E_SEARCH_KEYS_HPS + E2E_SEARCH_KEYS_CLA:
+        if key not in config and args.get(key) is None:
+            continue  # neither searched nor set: leave HPS_options / the run's default untouched
         args[key] = suggest_hyperparam(trial, config, key, args.get(key))
         hps[key] = {"values": [args[key]]}  # resolved to one value - the form load_hyperparams reads
         if key in config:
             drawn[key] = args[key]
+    unet_args_T = dict(args.get("unet_args_T") or {})
+    for key, unet_key in E2E_SEARCH_KEYS_CNN2.items():
+        if key in config:
+            unet_args_T[unet_key] = suggest_hyperparam(trial, config, key, unet_args_T.get(unet_key))
+            drawn[key] = unet_args_T[unet_key]
+    args["unet_args_T"] = unet_args_T or None
+    # architecture keys must stay fixed where a net is loaded from a checkpoint: CNN1 with case
+    # finetune or model_v, CNN2 with case finetune
+    fixed = ["depth", "init_features", "kernel_size"] if (args["case"] == "finetune" or args.get("model_v")) else []
+    fixed += list(E2E_SEARCH_KEYS_CNN2) if args["case"] == "finetune" else []
+    searched = [k for k in fixed if isinstance(config.get(k), dict) and len(config[k].get("values", [None, None])) > 1]
+    assert not searched, (f"architecture keys {searched} are searched, but that net is loaded from a "
+                          f"checkpoint (case finetune / model_v) - search them only from scratch")
     # lr comes from HPS_options; lr_stage2 and lr_schedule entries would silently override it
     assert not args.get("lr_stage2"), "a search config must not set lr_stage2 - it overrides the searched lr"
     assert not args.get("lr_schedule"), "a search config must not set lr_schedule - it overrides the searched lr"
