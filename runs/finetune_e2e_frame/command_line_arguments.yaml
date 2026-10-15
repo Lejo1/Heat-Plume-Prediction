@@ -27,11 +27,12 @@ model_T: ../../models/BEST_predict_T_add_s_outer
 unet_args_T:
   kernel_size: 4
 
-epochs: 100        # joint end-to-end finetuning (1 optimizer step per epoch and datapoint)
+epochs: 40         # joint end-to-end finetuning (1 optimizer step per epoch and datapoint); at lr 1e-4
+                   # the best val epoch lay at 22-36 in all controls of 2026-10-14, val T rises afterwards
 stage1_epochs: 0   # no velocity pretraining: baseline_v already IS the pretrained CNN1
 inputs: pki
 outputs: t
-notes: finetune_e2e plus the streamline-frame losses L_N and L_TOF on the heat-pump lines
+notes: finetune_e2e with the frame losses at lr 1e-4 (lambda_N 1, lambda_TOF 0.3, random seeds), best setting of the 2026-10-14 controls
 visualize: true
 randomK: true      # True for varyK datasets (flow main-direction switched)
 
@@ -53,7 +54,8 @@ fade_mode: absolute
 
 # --- optimization ----------------------------------------------------------------------------
 lr_schedule:         # stage-2 lr by epoch (merged onto epoch 0); see also lr_stage2 / lr_decay
-  0: 0.00001         
+  0: 0.0001          # 1e-4: CNN2 adapts to the soft lines (exposure bias); at 1e-5 there was no T gain.
+                     # Needs the frame losses: without them the T loss turns CNN1's line directions to ~11 deg
 clip_grad: 10000.0  # cap on the gradient norm (exploding gradients through the streamlines); high, so it only
                     # catches real explosions - with lambda_traj the normal gradient norm is O(1..10)
 lambda_traj: 0 # streamline-position loss: mean distance [cells] between CNN1's and the simulated velocity's
@@ -66,9 +68,13 @@ lambda_traj: 0 # streamline-position loss: mean distance [cells] between CNN1's 
 # Start-state gradient norms at CNN1's output (BEST_V + BEST_T, full domain, data 0, eval-mode BN):
 # T loss 3.7e-3 | L_N raw 3.0e-3 (hp) / 2.4e-3 (random) | L_TOF raw 1.25e-2 (hp) / 5.1e-3 (random)
 # | traj raw 33.5 (x 3e-4 = 1.0e-2). The lambdas below give each frame term about the T loss's norm.
+# Controls 2026-10-14 (40 epochs, lr 1e-4, notes e2e_2026-10-14/README.md): this setting gave test T
+# MAE 0.0829 +- 0.0020 over 4 repeats (start 0.0864); lambda_N 10 let the speed drift (vy MAE +60 %),
+# lambda_N 0.3 / 3, lambda_TOF 1 / 3, hp seeds and an lr warmup were within the run-to-run spread.
+# Training CNN2 alone (freeze_weights: v) gave 0.0828 as well: the T gain comes from CNN2.
 lambda_N: 1.0                # 0 = off
 lambda_TOF: 0.3              # 0 = off
-seed_mode: hp                # hp | random | both
+seed_mode: random            # hp | random | both
 n_seeds: 200                 # random seeds (random / both)
 seed_hp_offsets: false       # hp seeds: add the model's +-10-cell offset variants
 resample_seeds_each_epoch: true  # training random seeds redrawn every epoch; val/test fixed by seed_rng
