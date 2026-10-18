@@ -16,6 +16,10 @@ Two kinds of entry, so a two-stage pipeline and an end-to-end run can sit in the
   end-to-end {"run": <e2e run dir>}
              Reads the run's own measurements_test{,_start}.yaml.
 
+SCALING_TEST repeats everything on the scaling datapoint (SCALING_DATASET) into figures/scaling/: e2e
+entries read <run>/scaling_test/measurements_scaling{,_start}.yaml (eval_scaling_e2e.py, run on demand),
+two-stage entries are evaluated on a scaling step-2 dataset (built on demand).
+
 Inference plots use Pelzer's own primitives (DataToVisualize / plot_datafields with the
 jp_temperature / jp_linear colormaps), so every entry comes out in the same per-field
 "prediction / label / absolute error" style as the baselines' val_*.png.
@@ -42,11 +46,12 @@ from torch.utils.data import DataLoader
 from preprocessing import subdomain
 from preprocessing.datasets.dataset import DataPoint, DataPointE2E
 from preprocessing.transforms import NormalizeTransform
-from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.networks.unetVariants import UNetNoPad2
-from processing.training_e2e import reestimate_bn_stats
+from processing.training import load_hyperparams
+from processing.training_e2e import build_e2e_model, reestimate_bn_stats
 from step2_streamlines.streamlines_main import build_streamlines
 import eval_metrics as em
+import eval_scaling_e2e as esc
 
 # ==================================================================================================
 # CONFIG - edit this block
@@ -135,6 +140,14 @@ SHARED_COLOR_SCALE = True
 INCLUDE_START_INFERENCE = True
 SEPARATE_BAR_CHARTS = True           # one standalone figure per metric -> figures/bars/<metric>.png
 COMBINED_BAR_CHART = True            # the multi-panel overview -> figures/comparison_bars.png
+# Scaling test: additionally produce the whole figure set (inference plots, bars, csv) on the 5120^2
+# datapoint of SCALING_DATASET, into OUT_DIR/scaling/. e2e entries read <run>/scaling_test/ (written by
+# eval_scaling_e2e.py), two-stage entries get a scaling step-2 dataset and eval_metrics --scaling; missing
+# ones are made under the BUILD_MISSING_PREPS / COMPUTE_MISSING_METRICS rules. Two-stage entries may give
+# their scaling metrics file explicitly with metrics_scaling=. No paper reference is drawn on the scaling
+# charts (PAPER_REFERENCE holds the test values).
+SCALING_TEST = True
+SCALING_DATASET = "giant_double_100hp_v2"
 
 # ==================================================================================================
 
@@ -155,49 +168,58 @@ def prep_root() -> Path:
     return resolve("../datasets_prep")
 
 
-def prep_dir_for(step1_model):
+def prep_dir_for(step1_model, dataset=DATASET):
     """Where build_streamlines puts (or would put) the step-2 dataset for this step-1 model."""
-    base = prep_root() / f"{DATASET} inputs_ixydk+s_outer outputs_t"
+    base = prep_root() / f"{dataset} inputs_ixydk+s_outer outputs_t"
     return base if step1_model is None else Path(f"{base} prep_with_{step1_model.name} {METHOD_TAG}")
 
 
-def ensure_prep(step1_model):
-    """Return the step-2 dataset, generating it from step1_model's predicted velocities if absent."""
-    target = prep_dir_for(step1_model)
+def ensure_prep(step1_model, dataset=DATASET):
+    """Return the step-2 dataset, generating it from step1_model's predicted velocities if absent.
+    On the scaling dataset the base prep folders and the simulated-velocity variant (step1_model None)
+    are generated as well."""
+    target = prep_dir_for(step1_model, dataset)
     if target.exists():
         return target
-    if step1_model is None:
+    scaling = dataset != DATASET
+    if step1_model is None and not scaling:
         raise FileNotFoundError(f"{target} missing - produced by LGCNN_step2.py STEP 1/2")
     assert BUILD_MISSING_PREPS, f"{target} missing and BUILD_MISSING_PREPS is False"
-    print(f"    building step-2 dataset from {step1_model.name} (streamline tracing, slow) ...")
-    build_streamlines(model_path=step1_model, dataset_path=prep_root() / DATASET,
-                      based_on_pred=True, method=METHOD_TAG, randomK=RANDOM_K)
+    if scaling:
+        esc.ensure_scaling_prep(DATASET, dataset, prep_root=prep_root())
+    source = "simulated velocities" if step1_model is None else step1_model.name
+    print(f"    building step-2 dataset of {dataset} from {source} (streamline tracing, slow) ...")
+    build_streamlines(model_path=step1_model, dataset_path=prep_root() / dataset,
+                      based_on_pred=step1_model is not None, method=METHOD_TAG, randomK=RANDOM_K)
     assert target.exists(), f"build_streamlines did not produce {target}"
     print(f"    -> {target.name}")
     return target
 
 
-def ensure_metrics(model_dir: Path, data_dir: Path, explicit=None):
+def ensure_metrics(model_dir: Path, data_dir: Path, explicit=None, scaling: bool = False):
     """Paper-style metrics of `model_dir` on `data_dir`, computed if not already on disk.
 
     `explicit` short-circuits the search - useful because eval_metrics writes wherever its
-    --destination pointed, which is not necessarily next to the model it evaluated."""
+    --destination pointed, which is not necessarily next to the model it evaluated.
+    scaling: data_dir is the one-datapoint scaling dataset; eval_metrics then evaluates datapoint 0 as
+    "train" and "val" (order_data [0, 0]) and has no "test" entry, so "val" is returned."""
+    case = "val" if scaling else "test"
     if explicit:
         f = resolve(explicit)
-        return yaml.safe_load(f.read_text())["test"], f.name
+        return yaml.safe_load(f.read_text())[case], f.name
     fname = f"metrics_e2e-style_{model_dir.name} {data_dir.name}.yaml"
     for cand in (model_dir / fname, OUT_DIR / "metrics" / fname):
         if cand.exists():
-            return yaml.safe_load(cand.read_text())["test"], cand.name
+            return yaml.safe_load(cand.read_text())[case], cand.name
     assert COMPUTE_MISSING_METRICS, f"{fname} missing and COMPUTE_MISSING_METRICS is False"
     print(f"    evaluating {model_dir.name} on {data_dir.name} (full-domain, slow) ...")
     dest = OUT_DIR / "metrics"
     dest.mkdir(parents=True, exist_ok=True)
-    loaders, model, norm, info, args, out_ch = em.preparation(data_dir, model_dir, dest)
+    loaders, model, norm, info, args, out_ch = em.preparation(data_dir, model_dir, dest, scaling=scaling)
     collected = em.collect_metrics(data_dir, model_dir, dest, loaders, model, norm, info, args, out_ch)
     styled = em.to_e2e_style(collected, out_ch)
     em.save_yaml(styled, dest / fname)
-    return styled["test"], fname
+    return styled[case], fname
 
 
 def unet_args_from(hps: dict) -> dict:
@@ -207,12 +229,13 @@ def unet_args_from(hps: dict) -> dict:
                 norm=hps["norm"]["values"][0], repeat_inner=hps["repeat_inner"]["values"][0])
 
 
-def fields_two_stage(model_dir: Path, data_dir: Path):
-    """Single-UNet run evaluated on `data_dir`: Pelzer's own preparation path, unchanged."""
+def fields_two_stage(model_dir: Path, data_dir: Path, scaling: bool = False):
+    """Single-UNet run evaluated on `data_dir`: Pelzer's own preparation path, unchanged.
+    scaling: data_dir is the one-datapoint scaling dataset (datapoint 0)."""
     args = yaml.safe_load((model_dir / "command_line_arguments.yaml").read_text())
     hps = yaml.safe_load((model_dir / "HPS_options.yaml").read_text())
     info = yaml.safe_load((model_dir / "info.yaml").read_text())
-    ds = DataPoint(data_dir, i=args["order_data"][SPLIT_INDEX])
+    ds = DataPoint(data_dir, i=0 if scaling else args["order_data"][SPLIT_INDEX])
     x, y = ds[0]
     model = UNetNoPad2(in_channels=ds.input_channels, out_channels=ds.output_channels,
                        **unet_args_from(hps)).float()
@@ -224,27 +247,27 @@ def fields_two_stage(model_dir: Path, data_dir: Path):
     return prepare_data_to_plot(x_r, y_r, out_r, info)
 
 
-def fields_e2e(run_dir: Path, at_start: bool = False):
+def fields_e2e(run_dir: Path, at_start: bool = False, scaling: bool = False):
     """End-to-end run: rebuild the model as training_e2e did, then mirror prepare_data_to_plot.
 
     at_start reconstructs the model as it stood BEFORE stage 2 - the two baselines loaded and, if
     the run used it, BatchNorm re-estimated - i.e. exactly the state `measurements_test_start.yaml`
     was measured on. There is no epoch-0 checkpoint on disk; this rebuilds it from the run's config,
     which is reproducible because nothing random happens between loading and the first optimizer
-    step. Only meaningful for e2e runs; a two-stage entry has no "before training" state."""
+    step. Only meaningful for e2e runs; a two-stage entry has no "before training" state.
+    scaling: plot the datapoint of SCALING_DATASET instead of the run's test datapoint."""
     args = yaml.safe_load((run_dir / "command_line_arguments.yaml").read_text())
-    hps = yaml.safe_load((run_dir / "HPS_options.yaml").read_text())
+    args["destination"] = run_dir
+    args = load_hyperparams(args)
+    args["compile"] = False      # plots only: eager RK4, as before the shared builder
     name = Path(args["data_raw"]).name
-    ds = DataPointE2E(prep_root(), name, i=args["order_data"][SPLIT_INDEX])
+    if scaling:
+        esc.ensure_scaling_prep(name, SCALING_DATASET, prep_root=prep_root())
+        ds = DataPointE2E(prep_root(), SCALING_DATASET, i=0)
+    else:
+        ds = DataPointE2E(prep_root(), name, i=args["order_data"][SPLIT_INDEX])
     x, y = ds[0]
-    ua = unet_args_from(hps)
-    model = LGCNNEndToEnd(v_stats=ds.info_v["Labels"], unet_args=ua,
-                          unet_args_T={**ua, **(args.get("unet_args_T") or {})},
-                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
-                          fade_mode=args.get("fade_mode", "absolute"),
-                          detach_direct_v=args.get("detach_direct_v", False),
-                          detach_trajectory=args.get("detach_trajectory", False),
-                          v_blur=args.get("v_blur", 0.0) or 0.0).float()
+    model = build_e2e_model(args, ds.info_v["Labels"], inference=True)
     if at_start:
         assert args.get("model_v") and args.get("model_T"), \
             f"{run_dir.name}: cannot rebuild the start state without model_v + model_T"
@@ -326,21 +349,31 @@ def slug(label: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in label.replace("\n", "_"))
 
 
-def entry_metrics(e: dict, which: str = "final"):
-    """(metrics dict, source name) for one RUNS entry."""
+def entry_metrics(e: dict, which: str = "final", scaling: bool = False):
+    """(metrics dict, source name) for one RUNS entry, on the test datapoint or (scaling) on the
+    scaling datapoint."""
     if "run" in e:
-        f = resolve(e["run"]) / ("measurements_test.yaml" if which == "final"
-                                 else "measurements_test_start.yaml")
+        if scaling:
+            f = resolve(e["run"]) / esc.OUT_SUBDIR / ("measurements_scaling.yaml" if which == "final"
+                                                       else "measurements_scaling_start.yaml")
+            if not f.exists() and COMPUTE_MISSING_METRICS:
+                print(f"    scaling test of {e['label']!r} (eval_scaling_e2e) ...")
+                esc.evaluate_run(resolve(e["run"]), device=DEVICE)
+        else:
+            f = resolve(e["run"]) / ("measurements_test.yaml" if which == "final"
+                                     else "measurements_test_start.yaml")
         return (yaml.safe_load(f.read_text()), f.name) if f.exists() else (None, None)
     if which != "final":
         return None, None                      # a two-stage entry has no "before training" state
-    if e.get("metrics"):                       # explicit file: no prep needed to read it
-        return ensure_metrics(resolve(e["model"]), None, explicit=e["metrics"])
-    data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None)
-    return ensure_metrics(resolve(e["model"]), data_dir)
+    explicit = e.get("metrics_scaling" if scaling else "metrics")
+    if explicit:                               # explicit file: no prep needed to read it
+        return ensure_metrics(resolve(e["model"]), None, explicit=explicit, scaling=scaling)
+    data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None,
+                           SCALING_DATASET if scaling else DATASET)
+    return ensure_metrics(resolve(e["model"]), data_dir, scaling=scaling)
 
 
-def _draw_metric(ax, key, series, standalone=False):
+def _draw_metric(ax, key, series, standalone=False, show_reference=SHOW_PAPER_REFERENCE):
     """One metric's bars on one axes. Shared by the combined figure and the per-metric ones."""
     colors = ["#c9d3db" if st else "#2a7fb8" for _, _, st, _ in series]
     vals = [m[key] for _, m, _, _ in series]
@@ -350,7 +383,7 @@ def _draw_metric(ax, key, series, standalone=False):
     short = key.split(" [")[0]
     lo_ref = hi_ref = None
 
-    if SHOW_PAPER_REFERENCE:
+    if show_reference:
         ref, stat = em.PAPER_REFERENCE.get(PAPER_ROW, {}), em.PAPER_STATISTICS.get(PAPER_ROW, {})
         paper = ref.get(short)
         if paper is not None:
@@ -392,15 +425,17 @@ def _draw_metric(ax, key, series, standalone=False):
             ax.legend(fontsize=8, loc="best")
 
 
-def comparison_plots():
+def comparison_plots(scaling: bool = False, out_dir: Path = OUT_DIR):
+    """Bar charts + csv of all RUNS entries on the test datapoint, or (scaling) on the scaling one."""
+    show_reference = SHOW_PAPER_REFERENCE and not scaling
     series = []
     for e in RUNS:
         if INCLUDE_START_STATES and "run" in e:
-            m0, src0 = entry_metrics(e, "start")
+            m0, src0 = entry_metrics(e, "start", scaling)
             if m0:
                 series.append((f"{e['label']}\n(before e2e)", m0, True, e.get("paper_row", PAPER_ROW)))
                 print(f"    {e['label']!r} start <- {src0}")
-        m, src = entry_metrics(e, "final")
+        m, src = entry_metrics(e, "final", scaling)
         if m is None:
             print(f"    WARNING: no metrics for {e['label']!r} - skipped")
             continue
@@ -414,11 +449,11 @@ def comparison_plots():
         print(f"    note: {[k for k in COMPARISON_METRICS if k not in usable]} missing somewhere - omitted")
 
     if SEPARATE_BAR_CHARTS:
-        d = OUT_DIR / "bars"
+        d = out_dir / "bars"
         d.mkdir(parents=True, exist_ok=True)
         for key in usable:
             fig, ax = plt.subplots(figsize=(0.75 * len(series) + 3.2, 6.0))
-            _draw_metric(ax, key, series, standalone=True)
+            _draw_metric(ax, key, series, standalone=True, show_reference=show_reference)
             fig.tight_layout()
             out = d / f"{slug(key.split(' [')[0])}.{PIC_FORMAT}"
             fig.savefig(out, dpi=DPI)
@@ -431,20 +466,20 @@ def comparison_plots():
         fig, axes = plt.subplots(nrow, ncol, figsize=(0.62 * len(series) * ncol + 2.0, 5.4 * nrow),
                                  squeeze=False)
         for ax, key in zip(axes.flat, usable):
-            _draw_metric(ax, key, series)
+            _draw_metric(ax, key, series, show_reference=show_reference)
         for ax in axes.flat[len(usable):]:
             ax.axis("off")
-        if SHOW_PAPER_REFERENCE:
+        if show_reference:
             fig.suptitle(_suptitle(series), fontsize=10)
             fig.tight_layout(rect=[0, 0, 1, 0.94])
         else:
             fig.tight_layout()
-        out = OUT_DIR / f"comparison_bars.{PIC_FORMAT}"
+        out = out_dir / f"comparison_bars.{PIC_FORMAT}"
         fig.savefig(out, dpi=DPI)
         plt.close(fig)
         print(f"    -> {out}")
 
-    csv = OUT_DIR / "comparison_table.csv"
+    csv = out_dir / "comparison_table.csv"
     with csv.open("w", newline="") as f:                      # labels contain commas -> csv module
         import csv as _csv
         w = _csv.writer(f)
@@ -462,47 +497,57 @@ if __name__ == "__main__":
         assert ("run" in e) ^ ("model" in e), f"{e['label']}: give either run= or model=+prep_with="
         resolve(e.get("run") or e["model"])            # fail early on a typo'd path
 
-    if MAKE_INFERENCE_PLOTS:
-        print(f"Inference plots (device {DEVICE}, "
-              f"{'shared' if SHARED_COLOR_SCALE else 'per-run'} colour scale):")
+    assert not (SCALING_TEST and SUBDOMAIN), "the scaling test needs SUBDOMAIN = False (full fields)"
+    # (scaling, output folder): the test set always, the scaling set additionally with SCALING_TEST
+    eval_sets = [(False, OUT_DIR)] + ([(True, OUT_DIR / "scaling")] if SCALING_TEST else [])
 
-        def jobs():
-            """(label, thunk) per figure set - a run may contribute its start state as well."""
-            for e in RUNS:
-                if "run" in e:
-                    if e.get("include_start", INCLUDE_START_INFERENCE):
-                        yield (f"{e['label']} (before e2e)",
-                               lambda e=e: fields_e2e(resolve(e["run"]), at_start=True))
-                    yield e["label"], lambda e=e: fields_e2e(resolve(e["run"]))
-                else:
-                    def two_stage(e=e):
-                        data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None)
-                        return fields_two_stage(resolve(e["model"]), data_dir)
-                    yield e["label"], two_stage
+    for scaling, out_dir in eval_sets:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        set_name = f"scaling datapoint ({SCALING_DATASET})" if scaling else "test datapoint"
 
-        def write(label, d):
-            target = OUT_DIR / "inference" / slug(label)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            plot_datafields(d, str(target), {"format": PIC_FORMAT, "dpi": DPI},
-                            only_inner=False, plot_all_in_1_pic=False)
-            print(f"    -> {len(d)} fields to {target.parent}/{target.name}_*.{PIC_FORMAT}")
+        if MAKE_INFERENCE_PLOTS:
+            print(f"Inference plots on the {set_name} (device {DEVICE}, "
+                  f"{'shared' if SHARED_COLOR_SCALE else 'per-run'} colour scale):")
 
-        if SHARED_COLOR_SCALE:
-            # the shared range is only known after the last run, so compute everything first
-            all_fields = {}
-            for label, thunk in jobs():
-                print(f"  {label!r}")
-                all_fields[label] = thunk()
-            n = apply_shared_scales(all_fields)
-            print(f"  shared colour scale over {n} field groups")
-            for label, d in all_fields.items():
-                write(label, d)
-        else:
-            for label, thunk in jobs():
-                print(f"  {label!r}")
-                write(label, thunk())
+            def jobs():
+                """(label, thunk) per figure set - a run may contribute its start state as well."""
+                for e in RUNS:
+                    if "run" in e:
+                        if e.get("include_start", INCLUDE_START_INFERENCE):
+                            yield (f"{e['label']} (before e2e)",
+                                   lambda e=e: fields_e2e(resolve(e["run"]), at_start=True, scaling=scaling))
+                        yield e["label"], lambda e=e: fields_e2e(resolve(e["run"]), scaling=scaling)
+                    else:
+                        def two_stage(e=e):
+                            data_dir = ensure_prep(resolve(e["prep_with"]) if e.get("prep_with") else None,
+                                                   SCALING_DATASET if scaling else DATASET)
+                            return fields_two_stage(resolve(e["model"]), data_dir, scaling=scaling)
+                        yield e["label"], two_stage
 
-    if MAKE_COMPARISON_PLOTS:
-        print("Comparison charts:")
-        comparison_plots()
+            def write(label, d):
+                target = out_dir / "inference" / slug(label)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                plot_datafields(d, str(target), {"format": PIC_FORMAT, "dpi": DPI},
+                                only_inner=False, plot_all_in_1_pic=False)
+                print(f"    -> {len(d)} fields to {target.parent}/{target.name}_*.{PIC_FORMAT}")
+
+            if SHARED_COLOR_SCALE:
+                # the shared range is only known after the last run, so compute everything first
+                all_fields = {}
+                for label, thunk in jobs():
+                    print(f"  {label!r}")
+                    all_fields[label] = thunk()
+                n = apply_shared_scales(all_fields)
+                print(f"  shared colour scale over {n} field groups")
+                for label, d in all_fields.items():
+                    write(label, d)
+                del all_fields
+            else:
+                for label, thunk in jobs():
+                    print(f"  {label!r}")
+                    write(label, thunk())
+
+        if MAKE_COMPARISON_PLOTS:
+            print(f"Comparison charts on the {set_name}:")
+            comparison_plots(scaling=scaling, out_dir=out_dir)
     print(f"\nDone - everything in {OUT_DIR.resolve()}")

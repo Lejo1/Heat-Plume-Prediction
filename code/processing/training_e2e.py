@@ -24,6 +24,35 @@ from preprocessing import subdomain
 from utils.utils_args import load_yaml, save_yaml
 
 
+def build_e2e_model(args: Dict, v_stats: dict, inference: bool = False) -> LGCNNEndToEnd:
+    """LGCNNEndToEnd as configured by a run's command_line_arguments.yaml + HPS_options.yaml (args after
+    load_hyperparams); weights are not loaded. Shared by training_e2e and the inference/evaluation scripts.
+
+    v_stats: info.yaml "Labels" of the pki -> xy dataset (Rescale stats of vx, vy).
+    inference: the tracer smoothing of the END of training (v_blur_end if set, else v_blur). v_blur is
+    not stored in the checkpoint, and an annealed run finished training and its end-of-run test with
+    v_blur_end."""
+    unet_args = dict(depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"],
+                     stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
+                     norm=args["norm"], repeat_inner=args["repeat_inner"])
+    # CNN2 may need a different architecture than CNN1 - the two baselines were tuned separately.
+    # unet_args_T in command_line_arguments.yaml overrides individual keys, e.g. {kernel_size: 4}.
+    unet_args_T = {**unet_args, **(args.get("unet_args_T") or {})}
+    if unet_args_T != unet_args:
+        print(f"CNN2 architecture overrides: {args['unet_args_T']}")
+    v_blur = args.get("v_blur", 0.0) or 0.0
+    if inference and args.get("v_blur_end") is not None:
+        v_blur = args["v_blur_end"]
+    return LGCNNEndToEnd(v_stats=v_stats, unet_args=unet_args, unet_args_T=unet_args_T,
+                         randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
+                         use_compile=args.get("compile", False),
+                         fade_mode=args.get("fade_mode", "absolute"),
+                         detach_direct_v=args.get("detach_direct_v", False),
+                         detach_trajectory=args.get("detach_trajectory", False),
+                         v_blur=float(v_blur),
+                         freeze_bn=args.get("freeze_bn") or "none").float()
+
+
 def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
     """End-to-end LGCNN training: CNN1 + differentiable streamlines + CNN2, trained jointly
     from scratch on the temperature loss only. Full-domain samples, batch size 1.
@@ -49,23 +78,7 @@ def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
     except IndexError:
         pass
 
-    unet_args = dict(depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"],
-                     stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
-                     norm=args["norm"], repeat_inner=args["repeat_inner"])
-    # CNN2 may need a different architecture than CNN1 - the two baselines were tuned separately.
-    # unet_args_T in command_line_arguments.yaml overrides individual keys, e.g. {kernel_size: 4}.
-    unet_args_T = {**unet_args, **(args.get("unet_args_T") or {})}
-    if unet_args_T != unet_args:
-        print(f"CNN2 architecture overrides: {args['unet_args_T']}")
-    model = LGCNNEndToEnd(v_stats=dataset_train.info_v["Labels"], unet_args=unet_args,
-                          unet_args_T=unet_args_T,
-                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
-                          use_compile=args.get("compile", False),
-                          fade_mode=args.get("fade_mode", "absolute"),
-                          detach_direct_v=args.get("detach_direct_v", False),
-                          detach_trajectory=args.get("detach_trajectory", False),
-                          v_blur=args.get("v_blur", 0.0) or 0.0,
-                          freeze_bn=args.get("freeze_bn") or "none").float()
+    model = build_e2e_model(args, dataset_train.info_v["Labels"])
     model.to(args["device"])
     if model.freeze_bn != "none":
         nets = {"v": "CNN1", "T": "CNN2", "both": "CNN1 and CNN2"}[model.freeze_bn]
@@ -499,11 +512,15 @@ def reestimate_bn_stats(model, dataloader, device, repeats: int = 1):
     return len(bns), n_passes
 
 
-def build_frame_losses(args, model, dataset_train, path_data_prep: Path) -> dict:
+def build_frame_losses(args, model, dataset_train, path_data_prep: Path, eval_field: dict = None) -> dict:
     """The FrameLoss objects of one run, sharing one resolved eps / travel-time floor:
     "train": the run's options (seed_mode etc.); enters the training loss and the per-epoch metrics.
     "evals": {"hp": ..., "random": ...} for measurements_test{,_start}.yaml - the datapoint's heat-pump
              lines (no offsets) and n_seeds fixed random seeds, with the run's other frame options.
+    eval_field: the evaluators run on a field of another size (scaling test): {"field_shape": (H, W),
+             "seed_box_raw": ((a0, b0), (a1, b1))}. eps stays that of the training datapoint; it is
+             resolved on the first call, so call frame._resolve_eps(<training output region>) before
+             the first evaluation on such a field.
     Nothing is traced here; each object traces its lines on first use and caches them."""
     options = {k: args[k] for k in FrameLoss.DEFAULTS if args.get(k) is not None}
     _, y = dataset_train[0]
@@ -521,9 +538,13 @@ def build_frame_losses(args, model, dataset_train, path_data_prep: Path) -> dict
         print(f"frame loss well mask (flow): Q {well['Q']:.0f} m^3/y, b {well['b']} m, phi {well['phi']}")
     common = dict(eps_reference=v_ref, raw_origin=origin, field_shape=tuple(y.shape[1:]), well_params=well,
                   shared={})
+    common_eval, random_box = dict(common), {}
+    if eval_field is not None:
+        common_eval["field_shape"] = tuple(eval_field["field_shape"])
+        random_box = {"seed_box_raw": eval_field["seed_box_raw"]}
     frames = {"train": FrameLoss(model, **common, **options),
-              "evals": {"hp": FrameLoss(model, **common, **{**options, "seed_mode": "hp", "seed_hp_offsets": False}),
-                        "random": FrameLoss(model, **common, **{**options, "seed_mode": "random"})}}
+              "evals": {"hp": FrameLoss(model, **common_eval, **{**options, "seed_mode": "hp", "seed_hp_offsets": False}),
+                        "random": FrameLoss(model, **common_eval, **{**options, "seed_mode": "random", **random_box})}}
     del y
     return frames
 

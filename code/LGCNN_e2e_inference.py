@@ -14,9 +14,8 @@ from pathlib import Path
 import torch
 
 from preprocessing.datasets.dataset import DataPointE2E
-from processing.networks.lgcnn_e2e import LGCNNEndToEnd
 from processing.training import load_hyperparams
-from processing.training_e2e import evaluate_e2e, visualize_e2e
+from processing.training_e2e import build_e2e_model, evaluate_e2e, visualize_e2e
 from utils.utils_args import read_cla, save_yaml
 
 PATH_DATA_PREP = Path("../../datasets_prep")  # TODO: change to your path
@@ -42,15 +41,7 @@ if __name__ == "__main__":
     runid = dataset.input_names[0]
     print(f"Predicting {runid} on {args['device']}")
 
-    unet_args = dict(depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"],
-                     stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
-                     norm=args["norm"], repeat_inner=args["repeat_inner"])
-    model = LGCNNEndToEnd(v_stats=dataset.info_v["Labels"], unet_args=unet_args,
-                          randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
-                          use_compile=args.get("compile", False),
-                          fade_mode=args.get("fade_mode", "absolute"),
-                          detach_direct_v=args.get("detach_direct_v", False),
-                          detach_trajectory=args.get("detach_trajectory", False)).float()
+    model = build_e2e_model(args, dataset.info_v["Labels"], inference=True)
     model.load(args["destination"], args["device"])
     model.eval()
 
