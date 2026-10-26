@@ -61,39 +61,31 @@ DATASET = "dataset_giant_100hp_varyK"
 RANDOM_K = True                      # True for the varyK datasets (flow main direction switched)
 METHOD_TAG = "RK45"                  # only names the generated folder; the tracer is fixed-step RK4
 
+# Thesis runs (2026-10-24): the summary table of the results chapter. All run folders are collected in
+# Bachelorarbeit/runs/forPaper (mirrored on pcsgs11 in /scratch/veitjs/code/runs/forPaper), i.e.
+# ../runs/forPaper from the repository root on both machines. The two-stage entries read their test /
+# val metrics from the eval_metrics.py files in forPaper/E1_baseline/metrics. include_start: draw the
+# run's state before stage 2 as its own bar / plot (only once, all finetunes start from the same models).
+FP = "../runs/forPaper"
+E1_METRICS = FP + "/E1_baseline/metrics/metrics_e2e-style_{} dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_BEST_predict_v_v4 RK45.yaml"
 RUNS = [
-    # Pelzer's complete two-stage pipeline: her step 1 feeding her step 3. This is the paper's own
-    # chain, and the state every end-to-end run below is finetuned from.
-    dict(label="Paper Baseline",
-         model="../models/BEST_predict_T_add_s_outer",
-         prep_with="../models/BEST_predict_v_v4"),
-    # our two-stage reproduction, chained through our own step 1
-    #dict(label="our 2-stage\n(baseline_v -> baseline_T)",
-    #     model="../runs/baseline_T",
-    #     prep_with="../runs/baseline_v"),
-    # our step 3 on HER velocities: isolates step 3 from our step-1 quality, and makes the
-    # comparison against the finetunes fair, since they all start from BEST_V
-    #dict(label="our baseline_T\non BEST_V",
-    #     model="../runs/baseline_T",
-    #     prep_with="../models/BEST_predict_v_v4"),
-    
-    # her step 3 on simulated velocities: the isolated step-3 upper bound (no step-1 error at all)
-    
-    #dict(label="BEST_T isolated\n(simulated v)",
-    #     model="../models/BEST_predict_T_add_s_outer",
-    #     prep_with=None,
-    #     paper_row="step3_simulated_v"),   # different task -> different reference 
-    
-    # end-to-end runs
-    #dict(label="e2e: blur + lr sched", run="../runs/good_fines/finetune_e2e_blur_lr_schedule"),
-    #dict(label="e2e: no BN, blur",     run="../runs/good_fines/finetune_e2e_nobn_blur_lr_schedule"),
-    #dict(label="e2e: lr sched only",   run="../runs/good_fines/finetune_lr_schedule"),
-    #dict(label="e2e: no BN, lr sched only",   run="../runs/good_fines/finetune_e2e_lr_schedule_no_bn_restimate"),
-    dict(label="End-to-End",   run="runs/finetune_e2e_blur_detach_v"),
-    
+    # Pelzer's complete two-stage pipeline (hard lines): her step 1 feeding her step 3
+    dict(label="Paper Baseline", model="../models/BEST_predict_T_add_s_outer", prep_with="../models/BEST_predict_v_v4",
+         metrics=E1_METRICS.format("BEST_predict_T_add_s_outer")),
+    # classic sequential training: step 3 retrained on BEST_V's hard lines
+    dict(label="Sequential CNN2", model=FP + "/E1_baseline/sequential_T_bestv", prep_with="../models/BEST_predict_v_v4",
+         metrics=E1_METRICS.format("sequential_T_bestv")),
+    # end-to-end runs; central_frozenT_r1 also contributes the untrained soft-channel start state (the F runs
+    # were trained with visualize: false and have no start metrics)
+    dict(label="CNN1 through\nstreamlines", run=FP + "/E3_finetune/central/central_frozenT_r1", include_start=True),
+    dict(label="CNN2 trained\n(lr 1e-4)", run=FP + "/E4_lines/frame/F_frozenV", include_start=False),
+    dict(label="Joint\n(T loss)", run=FP + "/E3_finetune/central/central_joint_r1", include_start=False),
+    dict(label="Joint +\nframe losses", run=FP + "/E4_lines/frame/F_lamN1", include_start=False),
+    dict(label="Frame CNN1 +\nCNN2 retrained", run=FP + "/E4_lines/a2/A2_lamN1V_frozenV", include_start=False),
+    dict(label="From scratch +\nframe losses", run=FP + "/E3_finetune/from_scratch/example_e2e_frame", include_start=False),
 ]
 
-OUT_DIR = Path("figures")            # figures, and any metrics this script computes itself
+OUT_DIR = Path("../runs/forPaper/figures/export")  # figures, and any metrics this script computes itself
 MAKE_INFERENCE_PLOTS = True          # full-domain forward per entry - GPU only
 MAKE_COMPARISON_PLOTS = True         # bar charts from the metric yaml files - cheap
 BUILD_MISSING_PREPS = True           # generate a step-2 dataset when it is not on disk (slow!)
@@ -430,7 +422,7 @@ def comparison_plots(scaling: bool = False, out_dir: Path = OUT_DIR):
     show_reference = SHOW_PAPER_REFERENCE and not scaling
     series = []
     for e in RUNS:
-        if INCLUDE_START_STATES and "run" in e:
+        if e.get("include_start", INCLUDE_START_STATES) and "run" in e:
             m0, src0 = entry_metrics(e, "start", scaling)
             if m0:
                 series.append((f"{e['label']}\n(before e2e)", m0, True, e.get("paper_row", PAPER_ROW)))

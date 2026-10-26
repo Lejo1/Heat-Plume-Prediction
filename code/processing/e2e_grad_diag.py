@@ -150,6 +150,16 @@ def diagnose_e2e_gradients(model, x: torch.Tensor, y: torch.Tensor, args: Dict, 
 
     _plot(streamlines_np, m_stream, m_direct, m_gsf,
           dict(streamline=san_s, direct=san_d), stats, plot_path, detach)
+    if args.get("grad_diag_save_arrays", False):
+        # the plotted fields as arrays next to the png, for thesis figures (postprocessing/plot_grad_flow.py);
+        # [w, h] like the plot (imshow origin=lower), float32, ~50-90 MB on the full domain
+        npz_path = Path(plot_path).with_suffix(".npz")
+        np.savez_compressed(npz_path, streamlines=streamlines_np.astype(np.float32),
+                            dLdv_streamline=m_stream.astype(np.float32), dLdv_direct=m_direct.astype(np.float32),
+                            dLdsf=m_gsf.astype(np.float32), param_grad_norm_streamline=san_s,
+                            param_grad_norm_direct=san_d, v_blur=float(getattr(M, "v_blur", 0.0)),
+                            sigma=float(getattr(M, "sigma", 0.0)), detach_direct_v=detach)
+        print(f"  saved arrays -> {npz_path}")
 
     print("\n=== e2e gradient decomposition (unet_v parameter gradients, pure T loss) ===")
     print(f"  streamline route : raw {raw_s:.3e}  sanitized {san_s:.3e}"
