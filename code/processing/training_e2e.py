@@ -21,6 +21,8 @@ from processing.networks.model import weights_init
 from processing.solver import Solver
 from processing.training import load_hyperparams, suggest_hyperparam
 from preprocessing import subdomain
+from preprocessing.transforms import NormalizeTransform
+from postprocessing.metric_connectivity import connectivityLoss
 from utils.utils_args import load_yaml, save_yaml
 
 
@@ -655,10 +657,28 @@ def print_velocity_mae(unet_v, dataset_val, info_v, device):
         print(f"  stage-1 val MAE v{'x' if ch == 0 else 'y'}: {float((v_pred[:, ch] - y_crop[:, ch]).abs().mean() * delta):.1f} m/y")
 
 
+def moc_e2e(x, T_pred_C, info_v, threshold: float = 10.7) -> float:
+    """MoC [%] (Pelzer et al.) of a batch, mean over its datapoints: postprocessing/metric_connectivity.connectivityLoss
+    called as in eval_metrics.py of AllIn1/LGCNN/benchmarkingdata, i.e. per datapoint on the un-normalized inputs
+    centre-cropped to the output region (crop_to_output_size there), id_mat_ids = index of "Material ID",
+    threshold 10.7 degC, "unconnected_percentage". x: normalized pki input [B, 3, H, W] (CPU), T_pred_C:
+    T prediction [B, 1, h, w] in degC (CPU)."""
+    h, w = T_pred_C.shape[2:]
+    i0, j0 = (x.shape[2] - h) // 2, (x.shape[3] - w) // 2
+    norm = NormalizeTransform(info_v)
+    values = []
+    for x_b, T_b in zip(x, T_pred_C):
+        inputs = norm.reverse(x_b[:, i0:i0+h, j0:j0+w].clone(), data_type="Inputs")
+        values.append(connectivityLoss(inputs, T_b, id_mat_ids=info_v["Inputs"]["Material ID"]["index"],
+                                       threshold=threshold)["unconnected_percentage"])
+    return float(np.mean(values))
+
+
 def evaluate_e2e(model, dataloader, info_T, device, info_v=None, frame_evals=None):
     """Paper-style metrics of the full e2e pipeline. Temperature metrics are computed in [degC]
     (de-normalized), SSIM on the normalized fields (same convention as eval_metrics.py).
-    With info_v given, also reports the velocity MAE in [m/y] (paper Step-1 ref: 22.3 / 32.7).
+    With info_v given, also reports the velocity MAE in [m/y] (paper Step-1 ref: 22.3 / 32.7) and
+    "MoC [%]" (moc_e2e; needs info_v for the Material ID channel of the input).
     "traj dist [cells]": mean equal-time distance between the streamlines traced in CNN1's and in
     the simulated velocity (TrajectoryLoss), i.e. how far the predicted lines run off.
     frame_evals {name: FrameLoss}: adds "L_N <name>", "L_TOF <name>" and "angle [deg] <name>" (direction
@@ -695,6 +715,7 @@ def evaluate_e2e(model, dataloader, info_T, device, info_v=None, frame_evals=Non
                 **frame_metrics,
             }
             if info_v is not None:
+                metrics["MoC [%]"] = moc_e2e(x, pred_C, info_v)
                 for ch, name in [(1, "Liquid X-Velocity [m_per_y]"), (2, "Liquid Y-Velocity [m_per_y]")]:
                     v_stats = info_v["Labels"][name]
                     v_delta = v_stats["max"] - v_stats["min"]

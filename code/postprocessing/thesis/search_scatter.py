@@ -65,9 +65,9 @@ def main():
         ax.scatter([r["objective"] for r in pts], [r["test T MAE"] for r in pts], s=18, color="#2a7fb8")
         best = min(pts, key=lambda r: r["objective"])
         ax.scatter([best["objective"]], [best["test T MAE"]], s=40, color="#c1440e", label=f"best by val (trial {best['trial']})")
-        ax.axhline(t_ref, color="gray", ls="--", lw=1, label="start state, test")
+        ax.axhline(t_ref, color="gray", ls="--", lw=1, label="soft chain, untrained, test")
         if v_ref is not None:
-            ax.axvline(v_ref, color="gray", ls=":", lw=1, label="start state, val")
+            ax.axvline(v_ref, color="gray", ls=":", lw=1, label="soft chain, untrained, val")
         ax.set_xlabel("best val objective (Huber, normalized T)"); ax.set_ylabel("test T MAE [degC]")
         ax.set_title(f"{name}: {len(rows)} completed trials", fontsize=10); ax.legend(fontsize=8)
         fig.tight_layout()

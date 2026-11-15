@@ -2,16 +2,14 @@
 
 Input: forPaper/figures/grad_flow/graddiag_blur{0,1}/grad_diag_stage2_start.npz, written by the
 gradient diagnostic (grad_diag_only: true, grad_diag_save_arrays: true; start state BEST_V + BEST_T, pure
-T loss, full adjoint). Panels on a zoomed crop: soft streamline channel, |dL/dsf| at CNN2's input (dense),
-|dL/dv| through the streamlines for v_blur 0 and 1, |dL/dv| through CNN2's direct velocity channels
-(reference, cut in training by detach_direct_v). Arrays are [w, h] (imshow origin lower), as in the diagnostic.
+T loss, full adjoint). Two panels on a zoomed crop: |dL/dv| through the streamlines for v_blur 0 and 1, on
+one colour scale. Arrays are [w, h] (imshow origin lower), as in the diagnostic.
 
 usage (from code/): python -m postprocessing.thesis.plot_grad_flow [--crop x0 x1 y0 y1]"""
 import argparse
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
 
 from postprocessing.thesis.common import FIGURES, save
 
@@ -31,24 +29,15 @@ def main(crop):
     stream = [d0["dLdv_streamline"], d1["dLdv_streamline"]]
     vmax = max(np.log10(s.max()) for s in stream)
     vmin = vmax - 8
-    panels = [("soft streamline channel $s + s_o$", c(d0["streamlines"]), "magma", None, None),
-              (r"$\log_{10}|\partial L/\partial s|$ at CNN$_2$'s input", c(logmap(d0["dLdsf"])), "magma", None, None),
-              (r"$\log_{10}|\partial L/\partial v|$ via streamlines, $v_{blur}=0$", c(logmap(stream[0])), "magma", vmin, vmax),
-              (r"$\log_{10}|\partial L/\partial v|$ via streamlines, $v_{blur}=1$", c(logmap(stream[1])), "magma", vmin, vmax),
-              (r"$\log_{10}|\partial L/\partial v|$ via direct channels", c(logmap(d0["dLdv_direct"])), "viridis", None, None)]
-    fig, axes = plt.subplots(2, 3, figsize=(13, 8.2))
-    axes = axes.ravel()
-    im = axes[0].imshow(d0["streamlines"], origin="lower", cmap="magma", interpolation="nearest")
-    axes[0].add_patch(Rectangle((x0, y0), x1 - x0, y1 - y0, fill=False, edgecolor="cyan", lw=1.2))
-    axes[0].set_title("full field (crop marked)", fontsize=9)
-    for ax, (title, data, cmap, lo, hi) in zip(axes[1:], panels):
-        im = ax.imshow(data, origin="lower", cmap=cmap, vmin=lo, vmax=hi, interpolation="nearest",
+    panels = [(r"$v_{\mathrm{blur}}=0$", c(logmap(stream[0]))), (r"$v_{\mathrm{blur}}=1$", c(logmap(stream[1])))]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.6), constrained_layout=True)
+    for ax, (title, data) in zip(axes, panels):
+        im = ax.imshow(data, origin="lower", cmap="magma", vmin=vmin, vmax=vmax, interpolation="nearest",
                        extent=(x0, x1, y0, y1))
-        ax.set_title(title, fontsize=9)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    for ax in axes:
+        ax.set_title(title, fontsize=10)
         ax.set_xlabel("cells"); ax.set_ylabel("cells")
-    fig.tight_layout()
+    fig.colorbar(im, ax=axes, fraction=0.046, pad=0.02,
+                 label=r"$\log_{10}|\partial L/\partial v|$ through the streamlines")
     save(fig, SRC, "grad_flow")
 
     for name, d in (("v_blur 0", d0), ("v_blur 1", d1)):

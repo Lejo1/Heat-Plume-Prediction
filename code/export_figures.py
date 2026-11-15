@@ -75,12 +75,12 @@ RUNS = [
     # classic sequential training: step 3 retrained on BEST_V's hard lines
     dict(label="Sequential CNN2", model=FP + "/E1_baseline/sequential_T_bestv", prep_with="../models/BEST_predict_v_v4",
          metrics=E1_METRICS.format("sequential_T_bestv")),
-    # end-to-end runs; central_frozenT_r1 also contributes the untrained soft-channel start state (the F runs
-    # were trained with visualize: false and have no start metrics)
-    dict(label="CNN1 through\nstreamlines", run=FP + "/E3_finetune/central/central_frozenT_r1", include_start=True),
+    # end-to-end runs, the median repeat of each configuration; central_frozenT_r2 also contributes the untrained
+    # soft-channel start state (the F runs were trained with visualize: false and have no start metrics)
+    dict(label="CNN1 through\nstreamlines", run=FP + "/E3_finetune/central/central_frozenT_r2", include_start=True),
     dict(label="CNN2 trained\n(lr 1e-4)", run=FP + "/E4_lines/frame/F_frozenV", include_start=False),
-    dict(label="Joint\n(T loss)", run=FP + "/E3_finetune/central/central_joint_r1", include_start=False),
-    dict(label="Joint +\nframe losses", run=FP + "/E4_lines/frame/F_lamN1", include_start=False),
+    dict(label="Joint\n(T loss)", run=FP + "/E3_finetune/central/central_joint_r3", include_start=False),
+    dict(label="Joint +\nframe losses", run=FP + "/E4_lines/frame/finetune_e2e_frame_3", include_start=False),
     dict(label="Frame CNN1 +\nCNN2 retrained", run=FP + "/E4_lines/a2/A2_lamN1V_frozenV", include_start=False),
     dict(label="From scratch +\nframe losses", run=FP + "/E3_finetune/from_scratch/example_e2e_frame", include_start=False),
 ]
@@ -104,8 +104,7 @@ PIC_FORMAT = "png"                   # "pdf" for vector figures in the thesis
 # in the current results it is among the best - a chart without it overstates what training did.
 INCLUDE_START_STATES = True
 
-COMPARISON_METRICS = ["MAE [degC]", "RMSE [degC]", "Huber [degC]", "SSIM",
-                      "PAT0.1 [%]", "PAT1.0 [%]", "Linf [degC]"]
+COMPARISON_METRICS = ["MAE [degC]"]  # thesis: MAE only (RMSE, Huber, SSIM, PAT0.1, PAT1.0, Linf possible)
 PAPER_ROW = "end_to_end"             # default PAPER_REFERENCE key for the reference line. An entry
                                      # measuring a DIFFERENT task (e.g. isolated step 3, which has
                                      # no step-1 error at all) must override it with paper_row=...,

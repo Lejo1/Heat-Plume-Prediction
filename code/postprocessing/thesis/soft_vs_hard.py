@@ -58,7 +58,7 @@ def main(crop, run):
     t_lim = (min(ct(T(hard, "out")).min(), ct(T(soft, "out")).min()), max(ct(T(hard, "out")).max(), ct(T(soft, "out")).max()))
     e_max = max(ct(T(hard, "error")).max(), ct(T(soft, "error")).max())
     fig, axes = plt.subplots(2, 3, figsize=(13, 8.5))
-    for row, (name, d, sf) in enumerate((("hard (Pelzer's chain)", hard, sf_h), ("soft (start state)", soft, sf_s))):
+    for row, (name, d, sf) in enumerate((("Pelzer's chain", hard, sf_h), ("soft chain, untrained", soft, sf_s))):
         for ax, (title, data, cmap, lo, hi) in zip(axes[row], (
                 (f"{name}: streamline channel", cs(sf), "magma", 0, None),
                 (f"{name}: T prediction [degC]", ct(T(d, "out")), "RdBu_r", *t_lim),

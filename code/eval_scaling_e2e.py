@@ -17,7 +17,9 @@ Writes into <run>/scaling_test/:
     scaling_e2e_start.png            re-estimated if the run did), only for runs with model_v + model_T
 --split val writes the same files into <run>/val_eval/ with "val" in place of "scaling"
 (measurements_val{,_start}.yaml, val_e2e{,_start}.png), --split test into <run>/test_eval/.
---save_fields also writes <split>_fields.npz (final state, see save_fields) for thesis figures.
+--save_fields also writes <split>_fields.npz (final state, see save_fields) for thesis figures,
+--save_fields_start <split>_fields_start.npz of the start state (runs with model_v + model_T).
+--fields_only writes only these field files (no metrics, no panels; existing ones stay untouched).
 Existing results are kept unless --force is given.
 
 On first use the two scaling prep folders are created from the raw dataset (PATH_DATA_RAW), normalized
@@ -54,8 +56,11 @@ PATH_MODELS_DIR = CODE_DIR / "../runs"
 SCALING_DATASET = "giant_double_100hp_v2"
 OUT_SUBDIR = "scaling_test"
 # split -> (output subfolder of the run, name in the file names)
-SPLITS = {"scaling": (OUT_SUBDIR, "scaling"), "val": ("val_eval", "val"), "test": ("test_eval", "test")}
-ORDER_INDEX = {"val": 1, "test": 2}  # position of the split's datapoint in order_data
+# "train": the training datapoint itself, evaluated like val / test (e.g. line metrics on the heat-pump lines of the
+# field the run was trained on, to compare with the unseen fields)
+SPLITS = {"scaling": (OUT_SUBDIR, "scaling"), "val": ("val_eval", "val"), "test": ("test_eval", "test"),
+          "train": ("train_eval", "train")}
+ORDER_INDEX = {"train": 0, "val": 1, "test": 2}  # position of the split's datapoint in order_data
 # the two prep folders DataPointE2E joins: (inputs, outputs, folder suffix)
 PREP_KINDS = (("pki", "xy", ""), ("ixyk", "t", " for_s"))
 
@@ -96,10 +101,12 @@ def resolve_run(run) -> Path:
 
 
 def save_fields(model, dataset_eval, info_T, device, path: Path):
-    """Fields of the final model on the eval datapoint, cropped to the T output region, as float16 npz:
+    """Fields of the model on the eval datapoint, cropped to the T output region, as npz:
     T_pred / T_label [degC], vx_pred, vy_pred / vx_label, vy_label [m/y], s_pred = s + s_o of the
     prediction and s_label = the same channel traced on the simulated velocity (the run's own tracer
-    settings). Arrays in tensor order [h, w], as in visualize_e2e (plot .T with origin lower)."""
+    settings). Arrays in tensor order [h, w], as in visualize_e2e (plot .T with origin lower).
+    T in float32 (float16 resolves only ~0.008 degC at 8-16 degC, too coarse for differences between
+    runs), the rest float16."""
     x, y = dataset_eval[0]
     x, y = x.unsqueeze(0).to(device), y.unsqueeze(0).to(device)
     with torch.no_grad():
@@ -121,16 +128,19 @@ def save_fields(model, dataset_eval, info_T, device, path: Path):
     fields = {"T_pred": to_degC(pred[0, 0]), "T_label": to_degC(crop(y, ht, wt)[0, 0]),
               "vx_pred": v_pred[0], "vy_pred": v_pred[1], "vx_label": v_sim[0], "vy_label": v_sim[1],
               "s_pred": crop(s_pred, ht, wt)[0, 0], "s_label": crop(s_label, ht, wt)[0, 0]}
-    np.savez_compressed(path, **{k: v.cpu().numpy().astype(np.float16) for k, v in fields.items()})
+    np.savez_compressed(path, **{k: v.cpu().numpy().astype(np.float32 if k.startswith("T_") else np.float16)
+                                 for k, v in fields.items()})
     print(f"Saved fields {list(fields)} ({ht}x{wt}) to {path}")
 
 
 def evaluate_run(run_dir, device: str = None, force: bool = False, split: str = "scaling",
-                 save_fields_npz: bool = False) -> dict:
-    """Metrics of one e2e run on the scaling datapoint or (split "val" / "test") on its validation / test
+                 save_fields_npz: bool = False, save_fields_start: bool = False, fields_only: bool = False) -> dict:
+    """Metrics of one e2e run on the scaling datapoint or (split "val" / "test" / "train") on its validation / test / training
     datapoint: {"final": {...}, "start": {...} (finetune runs only)}. Writes them (and the panel plots) into
     <run>/scaling_test/, <run>/val_eval/ or <run>/test_eval/; existing files are read back instead of
-    recomputed unless force. save_fields_npz: also <split>_fields.npz of the final state (save_fields)."""
+    recomputed unless force. save_fields_npz: also <split>_fields.npz of the final state (save_fields);
+    save_fields_start: <split>_fields_start.npz of the start state. fields_only: only the requested field
+    files (always written), no metrics and panels; returns {}."""
     assert split in SPLITS, f"split must be one of {list(SPLITS)}, got {split!r}"
     subdir, name = SPLITS[split]
     run_dir = resolve_run(run_dir)
@@ -150,7 +160,13 @@ def evaluate_run(run_dir, device: str = None, force: bool = False, split: str = 
     states = ["final"] + (["start"] if args.get("model_v") and args.get("model_T") else [])
     files = {s: out_dir / f"measurements_{name}{'' if s == 'final' else '_start'}.yaml" for s in states}
     fields_file = out_dir / f"{name}_fields.npz"
-    if not force and all(f.exists() for f in files.values()) and (not save_fields_npz or fields_file.exists()):
+    fields_start_file = out_dir / f"{name}_fields_start.npz"
+    assert not save_fields_start or "start" in states, f"{run_dir.name}: no start state (model_v + model_T)"
+    if fields_only:
+        assert save_fields_npz or save_fields_start, "fields_only needs save_fields and/or save_fields_start"
+        states = [s for s in states if (save_fields_npz if s == "final" else save_fields_start)]
+    elif not force and all(f.exists() for f in files.values()) and (not save_fields_npz or fields_file.exists()) \
+            and (not save_fields_start or fields_start_file.exists()):
         import yaml
         print(f"{run_dir.name}: {name} results exist in {out_dir} (--force to recompute)")
         return {s: yaml.safe_load(f.read_text()) for s, f in files.items()}
@@ -186,6 +202,10 @@ def evaluate_run(run_dir, device: str = None, force: bool = False, split: str = 
                                                      repeats=args.get("bn_reestimate_repeats", 1))
                 print(f"  re-estimated {n_bn} BatchNorm layers from {n_passes} pass(es)")
         model.eval()
+        if fields_only:
+            save_fields(model, dataset_eval, dataset_train.info_T, args["device"],
+                        fields_file if state == "final" else fields_start_file)
+            continue
         if "eps" not in frames["evals"]["hp"].shared:
             # eps (frame_eps "pX") is a percentile over the training datapoint's output region
             x_t, _ = dataset_train[0]
@@ -201,6 +221,8 @@ def evaluate_run(run_dir, device: str = None, force: bool = False, split: str = 
                       plot_path=out_dir / f"{name}_e2e{'' if state == 'final' else '_start'}.png")
         if save_fields_npz and state == "final":
             save_fields(model, dataset_eval, dataset_train.info_T, args["device"], fields_file)
+        if save_fields_start and state == "start":
+            save_fields(model, dataset_eval, dataset_train.info_T, args["device"], fields_start_file)
         results[state] = metrics
         if "cuda" in args["device"]:
             torch.cuda.empty_cache()
@@ -210,9 +232,14 @@ def evaluate_run(run_dir, device: str = None, force: bool = False, split: str = 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Scaling test (giant_double_100hp_v2) or validation evaluation of an end-to-end run.")
     parser.add_argument("--run", type=str, required=True, help="run dir, or its name under ../runs")
-    parser.add_argument("--split", type=str, default="scaling", choices=list(SPLITS), help="scaling (default), val or test")
+    parser.add_argument("--split", type=str, default="scaling", choices=list(SPLITS), help="scaling (default), val, test or train")
     parser.add_argument("--device", type=str, default=None, help="default: the run's device")
     parser.add_argument("--force", action="store_true", help="recompute existing results")
     parser.add_argument("--save_fields", action="store_true", help="also write <split>_fields.npz (final state)")
+    parser.add_argument("--save_fields_start", action="store_true",
+                        help="also write <split>_fields_start.npz (start state)")
+    parser.add_argument("--fields_only", action="store_true",
+                        help="only the field files of --save_fields / --save_fields_start, no metrics and panels")
     cli = parser.parse_args()
-    evaluate_run(cli.run, device=cli.device, force=cli.force, split=cli.split, save_fields_npz=cli.save_fields)
+    evaluate_run(cli.run, device=cli.device, force=cli.force, split=cli.split, save_fields_npz=cli.save_fields,
+                 save_fields_start=cli.save_fields_start, fields_only=cli.fields_only)

@@ -1,10 +1,10 @@
 """Training curves from the TensorBoard events of the stage-2 runs (one scalar per epoch).
 
 Figures (forPaper/figures/curves/):
-  trajectory    train / val line distance of the trajectory-loss runs, start state (val_eval) as marker
+  trajectory    train / val line distance of the trajectory-loss run, start state (val_eval) as marker
   frame_angle   val angle without frame losses (F_plain) vs lambda_N 1 (all repeats)
-  a2_val_huber  val Huber of CNN2 trained on the lines of the frame-loss CNN1 (A2) vs on BEST_V's lines (F_frozenV)
-Runs with the same label share a colour (repeats); only the first one gets a legend entry.
+  a2_val_huber  val Huber of T (tag val_loss; tag "val Huber" also averages vx, vy) of CNN2 trained on the lines of the
+                frame-loss CNN1 (A2) vs on BEST_V's lines (F_frozenV)
 
 usage (from code/): python -m postprocessing.thesis.training_curves"""
 import yaml
@@ -16,15 +16,13 @@ from postprocessing.thesis.common import FIGURES, FORPAPER, save
 L = FORPAPER / "E4_lines"
 FIGS = {
     "trajectory": {"ylabel": "line distance [cells]", "start_key": "traj dist [cells]", "curves": [
-        ("lambda_traj 3e-4, lr 1e-5", L / "trajectory/traj_lr1e-5", ["val traj [cells]", "train traj [cells]"]),
-        ("lambda_traj 3e-5, lr 1e-4 -> 1e-5 (2026-10-09)", L / "trajectory/finetune_e2e_20261009", ["val traj [cells]", "train traj [cells]"])]},
+        ("lambda_traj 3e-4, lr 1e-5", L / "trajectory/traj_lr1e-5", ["val traj [cells]", "train traj [cells]"])]},
     "frame_angle": {"ylabel": "val angle [deg]", "curves": [
-        ("no frame losses", L / "frame/F_plain", ["val angle [deg]"])] + [
-        ("lambda_N 1", L / f"frame/{r}", ["val angle [deg]"])
-        for r in ["F_lamN1", "F_lamN1_r2", "F_lamN1_r3", "F_lamN1_r4", "finetune_e2e_frame_3"]]},
+        ("no frame losses", L / "frame/F_plain", ["val angle [deg]"]),
+        ("lambda_N 1", L / "frame/finetune_e2e_frame_3", ["val angle [deg]"])]},
     "a2_val_huber": {"ylabel": "val Huber (normalized T)", "curves": [
-        ("CNN2 on lines of the frame-loss CNN1", L / f"a2/{r}", ["val Huber"]) for r in ["A2_lamN1V_frozenV", "A2_lamN1V_frozenV_r2"]] + [
-        ("CNN2 on lines of BEST_V", L / f"frame/{r}", ["val Huber"]) for r in ["F_frozenV", "F_frozenV_r2"]]},
+        ("CNN2 on lines of the frame-loss CNN1", L / "a2/A2_lamN1V_frozenV", ["val_loss"]),
+        ("CNN2 on lines of BEST_V", L / "frame/F_frozenV", ["val_loss"])]},
 }
 STYLES = ["-", "--"]   # per tag: val solid, train dashed
 
@@ -55,7 +53,7 @@ def main():
                     ax.plot([0], [yaml.safe_load(f.read_text())[spec["start_key"]]], "o", color=c, ms=5)
         ax.set_xlabel("epochs trained"); ax.set_ylabel(spec["ylabel"]); ax.legend(fontsize=8)
         if "start_key" in spec:
-            ax.set_title("marker: start state (val)", fontsize=9)
+            ax.set_title("marker: soft chain, untrained (val)", fontsize=9)
         fig.tight_layout()
         save(fig, FIGURES / "curves", name)
 
