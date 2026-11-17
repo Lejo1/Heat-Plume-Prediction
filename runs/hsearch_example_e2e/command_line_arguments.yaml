@@ -1,0 +1,81 @@
+# Hyperparameter search of the end-to-end pipeline trained from scratch (case: train):
+#   cd code && python main.py --destination hsearch_example_e2e --hsearch True
+# In every trial CNN1 is pretrained in stage 1 and CNN2 starts randomly initialized. Searched
+# (HPS_options.yaml): stage-2 and streamline parameters, the frame losses and both architectures.
+# Each trial runs in hsearch_example_e2e/trials/<number>/. Objective: the best val_loss of a trial.
+# A trial takes ~35 min stage 1 + ~4.5 h stage 2 on an RTX 3090.
+pipeline: e2e
+case: train
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false
+
+# --- study -----------------------------------------------------------------------------------
+n_trials: 20
+pruner_startup_trials: 3
+pruner_warmup_epochs: 500  # = epochs, i.e. no pruning (out-of-memory trials are still marked pruned)
+
+# --- fixed setup -----------------------------------------------------------------------------
+model: null
+model_v: null          # no checkpoint (CNN1's architecture is searched): stage 1 instead
+stage1_epochs: 50      # stage 1: CNN1 trained on velocity patches (skip_per_dir / len_box in HPS_options.yaml)
+stage1_lr_schedule:    # stage-1 lr, independent of the searched stage-2 lr
+  0: 0.0001
+epochs: 500            # stage 2 per trial
+inputs: pki
+outputs: t
+notes: hyperparameter search (e2e from scratch; stage-2 parameters, frame losses, architectures of CNN1 and CNN2)
+randomK: true
+t_steps: 10000
+fade_mode: absolute
+compile: true
+stage1_force: false
+val_loss: Huber
+val_loss_with_v: false
+order_data:
+- 0
+- 1
+- 2
+
+# --- lr comes from HPS_options.yaml ----------------------------------------------------------
+lr_schedule:           # must stay empty (as lr_stage2): it would override the searched lr
+
+# --- defaults for keys HPS_options.yaml does not list ----------------------------------------
+unet_args_T:           # CNN2's architecture where it differs from CNN1's;
+  kernel_size: 4       # depth_T / init_features_T / kernel_size_T in HPS_options.yaml overwrite it
+sigma: 1.0
+v_blur: 0.0
+v_blur_end: 0.0        # follows the drawn v_blur while v_blur is searched
+lambda_v: 0.01
+clip_grad: 1.0
+detach_direct_v: false
+detach_trajectory: true
+bn_reestimate: false
+freeze_bn: none
+lambda_N: 1.0          # frame losses: lambda_N, lambda_TOF and seed_mode are searched,
+lambda_TOF: 0.3        # the options below are fixed
+seed_mode: random
+
+# --- fixed frame-loss options ----------------------------------------------------------------
+n_seeds: 200                 # random seeds (seed_mode random / both)
+seed_hp_offsets: false       # hp seeds: add the model's +-10-cell offset variants
+resample_seeds_each_epoch: true  # training seeds redrawn every epoch; val/test seeds fixed by seed_rng
+seed_rng: 0
+frame_ds_cells: 0.5          # arc-length spacing of the true-line nodes [cells]
+frame_eps: p5                # [m/y], or "pX" = X-th percentile of |v*| on the training datapoint
+tof_floor:                   # [m/y] floor of the travel time, empty = frame_eps / 10
+tof_checkpoint_cells: 50     # travel-time checkpoints every N cells of arc length (+ line end)
+well_mask_mode: fixed        # fixed | flow: drop nodes within r_w of any heat pump
+well_mask_radius: 5          # fixed: r_w [cells]
+well_mask_c: 1.0             # flow: r_w = max(2, c * Q / (b * phi * |v*|))
+seed_max_length_cells:       # empty = trace to t_end
+log_frame_metrics: true      # per-epoch train/val L_N, L_TOF, angle
+
+# --- diagnostics, written per trial ----------------------------------------------------------
+visualize: true
+grad_diag: true
+grad_diag_only: false
+pipeline_plot_every: 5
+pipeline_plot_max: 40

@@ -10,7 +10,7 @@ from step2_streamlines.streamlines_main import build_streamlines
 
 PATH_DATA_RAW = Path("../datasets") # TODO: change to your path
 PATH_DATA_PREP = Path("../datasets_prep") # TODO: change to your path
-PATH_MODELS_DIR = Path("../runs") # TODO: change to your path
+PATH_MODELS_DIR = Path("../models") # TODO: change to your path
 
 if __name__ == "__main__":
     # for data preparation
@@ -19,8 +19,8 @@ if __name__ == "__main__":
 
     # for streamlines, partially only required if based_on_pred is True
     method = "RK45" # or RK23 or Radau # TODO adapt to your needs
-    based_on_pred = True # based on simulated or predicted velocities # TODO adapt to your needs
-    model = PATH_MODELS_DIR / "MODEL_STEP1" # TODO adapt to your needs
+    based_on_pred = False # based on simulated or predicted velocities # TODO adapt to your needs
+    model = PATH_MODELS_DIR / "BEST_predict_v_v4" # TODO adapt to your needs
 
 
     # STEP 1: prepare data (ixyk->T and pki->xy)

@@ -1,0 +1,32 @@
+activation_fct: ReLU
+batchsize: 20
+bool_cutouts: true
+case: train
+data_prep: ../../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t
+data_raw: ../datasets/dataset_giant_100hp_varyK
+depth: 4
+destination: ../runs/baseline_T
+device: cuda
+dilation: 1
+epochs: 50
+init_features: 32
+inputs: ixydkc
+kernel_size: 4
+len_box: 256
+lr: 0.00001  # taken from HPS_options.yaml
+model: null
+norm: batchnorm
+notes: baseline step 3 (predict T), synthetic-permeability (varyK) dataset, DaRUS
+  doi:10.18419/DARUS-4156
+optimizer_switch: false
+order_data:
+- 0
+- 1
+- 2
+outputs: t
+repeat_inner: false
+skip_per_dir: 8
+stride: 1
+subdomain: false   # true = one hardcoded 736^2 window instead of the full field (debugging, preprocessing/subdomain.py)
+train_loss: MAE
+visualize: false

@@ -13,8 +13,9 @@ class Model(nn.Module):
 
     def infer(self, data, device:str = "cpu"):
         self.eval()
-        torch.set_grad_enabled(False)  # Disable gradient computation for testing
-        return self(data.to(device)).detach()
+        # scoped no_grad: torch.set_grad_enabled(False) would stay off for the rest of the process
+        with torch.no_grad():
+            return self(data.to(device))
 
     def save(self, path:Path, model_name: str = "model.pt"):
         torch.save(self.state_dict(), path/model_name)

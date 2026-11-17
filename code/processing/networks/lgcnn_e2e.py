@@ -1,0 +1,194 @@
+from pathlib import Path
+
+import torch
+
+from processing.networks.model import Model
+from processing.networks.unetVariants import UNetNoPad2
+from step2_streamlines.streamlines_helpers import smooth_velocity_field, trace_and_draw_soft
+
+
+class LGCNNEndToEnd(Model):
+    """End-to-end LGCNN: CNN1 (pki -> v) -> differentiable streamlines -> CNN2 (ixydkc -> T).
+
+    Input x: [B, 3, H, W] with channels ordered as in the pki dataset (p=0, k=1, i=2), normalized.
+    Output: [B, 3, h, w] with channels [T, vx, vy] (normalized): the temperature prediction plus
+    CNN1's velocity prediction center-cropped to the same size (for the auxiliary velocity loss).
+    Spatially smaller than the input because both UNets use valid (no-padding) convolutions.
+
+    CNN1's normalized velocity feeds CNN2 directly (both datasets share the Rescale stats); the
+    tracer gets physical velocities through the reverse Rescale (stats stored as buffers).
+    """
+
+    IDX_P, IDX_K, IDX_I = 0, 1, 2  # channel order of the pki input
+    FREEZE_BN_OPTIONS = ("none", "v", "T", "both")
+    # channel order of CNN2's input, matching the T-dataset info.yaml:
+    # 0=Material ID, 1=vx, 2=vy, 3=Streamlines Faded, 4=Permeability, 5=Streamlines Faded Outer
+
+    def __init__(self, v_stats: dict, unet_args: dict, randomK_data: bool = False,
+                 t_steps: int = 10_000, sigma: float = 1.0, offsets=(0, 10, -10), use_compile: bool = False,
+                 fade_mode: str = "absolute", detach_direct_v: bool = False, unet_args_T: dict = None,
+                 v_blur: float = 0.0, detach_trajectory: bool = False, freeze_bn: str = "none"):
+        """v_stats: info.yaml "Labels" dict of the pki->xy dataset (Rescale min/max of vx, vy).
+        unet_args_T: CNN2's architecture if it differs from CNN1's (default: unet_args)."""
+        super().__init__()
+        self.unet_v = UNetNoPad2(in_channels=3, out_channels=2, **unet_args)
+        self.unet_T = UNetNoPad2(in_channels=6, out_channels=1, **(unet_args_T or unet_args))
+
+        vx_stats = v_stats["Liquid X-Velocity [m_per_y]"]
+        vy_stats = v_stats["Liquid Y-Velocity [m_per_y]"]
+        assert vx_stats["norm"] == "Rescale" and vy_stats["norm"] == "Rescale", \
+            "reverse-normalization implemented for Rescale only"
+        v_min = torch.tensor([vx_stats["min"], vy_stats["min"]], dtype=torch.float32)
+        v_delta = torch.tensor([vx_stats["max"] - vx_stats["min"], vy_stats["max"] - vy_stats["min"]], dtype=torch.float32)
+        self.register_buffer("v_min", v_min.reshape(2, 1, 1))
+        self.register_buffer("v_delta", v_delta.reshape(2, 1, 1))
+
+        self.randomK_data = randomK_data
+        self.t_steps = t_steps
+        self.sigma = sigma
+        self.offsets = tuple(offsets)
+        self.use_compile = use_compile
+        self.fade_mode = fade_mode  # "absolute" (default) or "per_line" (legacy/paper convention)
+        # Gaussian smoothing of the velocity seen by the tracer only (0 = off), see smooth_velocity_field.
+        # Plain attribute so it can be annealed; not stored in the checkpoint.
+        self.v_blur = float(v_blur)
+        self.detach_direct_v = detach_direct_v  # stop-gradient on CNN2's direct v channels (see forward)
+        # stop-gradient across RK4 steps: dL/dv then blames only the velocity each step sampled,
+        # instead of chaining back along the whole line (see calc_streamlines)
+        self.detach_trajectory = detach_trajectory
+        # BatchNorm layers of CNN1 ("v"), CNN2 ("T"), both or none that stay in eval mode during
+        # training: running statistics fixed, gamma/beta still train. See train().
+        if freeze_bn not in self.FREEZE_BN_OPTIONS:
+            raise ValueError(f"freeze_bn must be one of {self.FREEZE_BN_OPTIONS}, got {freeze_bn!r}")
+        self.freeze_bn = freeze_bn
+        self.last_intermediates = {}  # detached v/streamlines of the last forward, for plots
+        # set by PipelineTap for one step: keep the stage tensors of the forward and retain their .grad
+        self.capture_intermediates = False
+        # heat-pump positions of the last forward in output coordinates, one [n, 2] tensor per sample:
+        # inside the output region (trajectory loss) and all of them (frame loss well mask)
+        self.last_hp = []
+        self.last_hp_all = []
+        self.tapped = {}
+
+    def frozen_bn_layers(self):
+        """The BatchNorm layers selected by freeze_bn."""
+        nets = {"none": (), "v": (self.unet_v,), "T": (self.unet_T,), "both": (self.unet_v, self.unet_T)}[self.freeze_bn]
+        return [m for net in nets for m in net.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+
+    def train(self, mode: bool = True):
+        """nn.Module.train, except that the BatchNorm layers selected by freeze_bn stay in eval mode.
+        Only calls on this model are affected: stage-1 pretraining trains unet_v directly and keeps
+        ordinary BatchNorm."""
+        super().train(mode)
+        for m in self.frozen_bn_layers():
+            m.eval()
+        return self
+
+    def _load_unet(self, net, path, label: str, device: str = "cpu", model_name: str = "model.pt"):
+        """Load one sub-net from a separately trained run, with a readable error on an architecture mismatch."""
+        location = "cuda:0" if "cuda" in str(device) else "cpu"
+        ckpt = Path(path) / model_name
+        assert ckpt.exists(), f"{label}: checkpoint {ckpt} not found"
+        sd = torch.load(ckpt, map_location=location)
+        sd = sd.state_dict() if hasattr(sd, "state_dict") else sd
+        here = net.state_dict()
+        bad = [(k, tuple(v.shape), tuple(here[k].shape)) for k, v in sd.items()
+               if k in here and v.shape != here[k].shape]
+        missing = [k for k in here if k not in sd] + [k for k in sd if k not in here]
+        if bad or missing:
+            detail = "".join(f"\n    {k}: checkpoint {a} vs model {b}" for k, a, b in bad[:8])
+            if missing:
+                detail += f"\n    {len(missing)} key(s) present in only one of the two, e.g. {missing[:3]}"
+            raise RuntimeError(
+                f"{label}: {ckpt} does not fit this run's architecture.{detail}\n"
+                f"  The first conv's kernel shape reveals the trained kernel_size; set it in "
+                f"HPS_options.yaml (CNN1) or via unet_args_T in command_line_arguments.yaml (CNN2).")
+        net.load_state_dict(sd)
+        print(f"  loaded {label} from {ckpt} ({sum(p.numel() for p in net.parameters()):,} params)")
+
+    def load_baselines(self, path_v, path_T, device: str = "cpu", model_name: str = "model.pt"):
+        """Initialize CNN1 and CNN2 from the two separately trained runs (step 1: pki->v,
+        step 3: ixydk+s_outer->T) instead of from one end-to-end checkpoint."""
+        self._load_unet(self.unet_v, path_v, "CNN1 (unet_v)", device, model_name)
+        self._load_unet(self.unet_T, path_T, "CNN2 (unet_T)", device, model_name)
+        self.to(device)
+
+    def load_pretrained_v(self, path_v, device: str = "cpu", model_name: str = "model.pt"):
+        """Seed CNN1 alone from an existing step-1 run, leaving CNN2 as initialized. Used by the
+        from-scratch pipeline in place of its own stage-1 pretraining."""
+        self._load_unet(self.unet_v, path_v, "CNN1 (unet_v)", device, model_name)
+        self.to(device)
+
+    def _tap(self, name: str, t: torch.Tensor) -> torch.Tensor:
+        """Record a stage boundary while capturing. retain_grad() makes .grad available on this
+        non-leaf tensor after backward; values and the graph are unchanged."""
+        if self.capture_intermediates:
+            if t.requires_grad:
+                t.retain_grad()
+            self.tapped[name] = t
+        return t
+
+    def trace(self, v_phys: torch.Tensor, x_crop: torch.Tensor):
+        """Soft streamline images (sf, sf_outer), each [B, 1, h, w], from physical velocities and the
+        pki input cropped to v's size. Shared by forward and the PipelineTap's re-trace, so both run
+        the identical computation."""
+        h, w = v_phys.shape[2:]
+        # only the tracer sees the coarse-grained field; CNN2's direct v channels keep the sharp
+        # prediction, and so does the model's own v output
+        v_trace = smooth_velocity_field(v_phys, self.v_blur) if self.v_blur > 0 else v_phys
+        sf, sf_outer = [], []
+        for b in range(v_phys.shape[0]):
+            # heat pump cells: raw Material ID == 2 <=> normalized i-channel == 1
+            hp_positions = self.heat_pump_positions(x_crop[b, self.IDX_I])
+            occs = trace_and_draw_soft(hp_positions, v_trace[b, 0], v_trace[b, 1], (h, w),
+                                       offsets=self.offsets, randomK_data=self.randomK_data,
+                                       faded=True, t_steps=self.t_steps, sigma=self.sigma,
+                                       use_compile=self.use_compile, fade_mode=self.fade_mode,
+                                       detach_trajectory=self.detach_trajectory)
+            sf.append(occs[0])
+            sf_outer.append(sum(occs[1:]) if len(occs) > 1 else torch.zeros_like(occs[0]))
+        return torch.stack(sf).unsqueeze(1), torch.stack(sf_outer).unsqueeze(1)
+
+    @staticmethod
+    def heat_pump_positions(i_channel: torch.Tensor) -> torch.Tensor:
+        """[n, 2] cell-centre coordinates of the heat pumps: raw Material ID == 2 <=> normalized
+        i-channel == 1."""
+        return torch.nonzero(i_channel == 1.0).float() + 0.5
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.capture_intermediates:
+            self.tapped = {}
+        self._tap("x", x)                        # CNN1 input
+        v_norm = self.unet_v(x)  # [B, 2, h, w], normalized velocities
+        self._tap("v_norm", v_norm)              # CNN1 output = streamline + direct-channel input
+
+        # center-crop the input channels to CNN1's (valid-conv reduced) output size
+        h, w = v_norm.shape[2:]
+        i0, j0 = (x.shape[2] - h) // 2, (x.shape[3] - w) // 2
+        x_crop = x[:, :, i0:i0+h, j0:j0+w]
+
+        # streamlines per sample, from physical velocities (differentiable reverse Rescale)
+        v_phys = self._tap("v_phys", v_norm * self.v_delta + self.v_min)
+        sf, sf_outer = self.trace(v_phys, x_crop)
+        sf = self._tap("sf", sf)                 # [B, 1, h, w], streamline output
+        sf_outer = self._tap("sf_outer", sf_outer)
+
+        # CNN2 input in the T-dataset channel order: [i, vx, vy, sf, k, sf_outer].
+        # detach_direct_v: CNN1 then gets the T-loss gradient only through the streamlines.
+        v_direct = v_norm.detach() if self.detach_direct_v else v_norm
+        x_T = self._tap("x_T", torch.cat([x_crop[:, self.IDX_I:self.IDX_I+1], v_direct, sf,
+                                          x_crop[:, self.IDX_K:self.IDX_K+1], sf_outer], dim=1))
+        self.last_intermediates = {"v_norm": v_norm.detach(), "sf": sf.detach(), "sf_outer": sf_outer.detach()}
+        T_pred = self._tap("T_pred", self.unet_T(x_T))  # CNN2 output
+
+        # append v center-cropped to T's size, for the auxiliary velocity loss
+        ht, wt = T_pred.shape[2:]
+        it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2
+        v_out = self._tap("v_out", v_norm[:, :, it:it+ht, jt:jt+wt])
+        offset = torch.tensor([it, jt], dtype=torch.float32, device=x.device)
+        self.last_hp, self.last_hp_all = [], []
+        for b in range(x.shape[0]):
+            hp = self.heat_pump_positions(x_crop[b, self.IDX_I]) - offset
+            self.last_hp_all.append(hp)
+            self.last_hp.append(hp[(hp[:, 0] >= 0) & (hp[:, 0] < ht) & (hp[:, 1] >= 0) & (hp[:, 1] < wt)])
+        return torch.cat([T_pred, v_out], dim=1)

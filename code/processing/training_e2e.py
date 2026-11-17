@@ -1,0 +1,688 @@
+import logging
+import multiprocessing
+from datetime import datetime
+from pathlib import Path
+from typing import Dict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.nn import MSELoss, L1Loss, HuberLoss
+from torch.utils.data import DataLoader
+
+from preprocessing.datasets.dataset import DataPoint, DataPointE2E
+from preprocessing.datasets.dataset_cuts_jit import SimulationDatasetCuts
+from processing.e2e_pipeline_plot import PipelineTap
+from processing.loss_fcts import E2ELoss, SSIMLoss, PATLoss, TrajectoryLoss, FrameLoss, well_parameters
+from processing.networks.lgcnn_e2e import LGCNNEndToEnd
+from processing.networks.model import weights_init
+from processing.solver import Solver
+from processing.training import load_hyperparams, suggest_hyperparam
+from preprocessing import subdomain
+from preprocessing.transforms import NormalizeTransform
+from postprocessing.metric_connectivity import connectivityLoss
+from utils.utils_args import load_yaml, save_yaml
+
+
+def build_e2e_model(args: Dict, v_stats: dict, inference: bool = False) -> LGCNNEndToEnd:
+    """LGCNNEndToEnd from a run's args (after load_hyperparams); weights are not loaded.
+    v_stats: info.yaml "Labels" of the pki -> xy dataset.
+    inference: trace with the smoothing of the end of training (v_blur_end if set, else v_blur)."""
+    unet_args = dict(depth=args["depth"], init_features=args["init_features"], kernel_size=args["kernel_size"],
+                     stride=args["stride"], dilation=args["dilation"], activation=args["activation_fct"],
+                     norm=args["norm"], repeat_inner=args["repeat_inner"])
+    # CNN2 may need a different architecture than CNN1 - the two baselines were tuned separately.
+    # unet_args_T in command_line_arguments.yaml overrides individual keys, e.g. {kernel_size: 4}.
+    unet_args_T = {**unet_args, **(args.get("unet_args_T") or {})}
+    if unet_args_T != unet_args:
+        print(f"CNN2 architecture overrides: {args['unet_args_T']}")
+    v_blur = args.get("v_blur", 0.0) or 0.0
+    if inference and args.get("v_blur_end") is not None:
+        v_blur = args["v_blur_end"]
+    return LGCNNEndToEnd(v_stats=v_stats, unet_args=unet_args, unet_args_T=unet_args_T,
+                         randomK_data=args["randomK"], t_steps=args["t_steps"], sigma=args["sigma"],
+                         use_compile=args.get("compile", False),
+                         fade_mode=args.get("fade_mode", "absolute"),
+                         detach_direct_v=args.get("detach_direct_v", False),
+                         detach_trajectory=args.get("detach_trajectory", False),
+                         v_blur=float(v_blur),
+                         freeze_bn=args.get("freeze_bn") or "none").float()
+
+
+def training_e2e(args: Dict, PATH_DATA_PREP: Path, optuna_trial=None):
+    """End-to-end LGCNN training: CNN1 + differentiable streamlines + CNN2, trained jointly.
+    Full-domain samples, batch size 1.
+
+    optuna_trial: hyperparameter search; the Solver reports every epoch's validation loss to it.
+    The best validation loss is left on the returned model as `best_val_loss` (see run_e2e)."""
+    np.random.seed(1)
+    torch.manual_seed(1)
+    multiprocessing.set_start_method("spawn", force=True)
+
+    args = load_hyperparams(args)
+    dataset_name = args["data_raw"].name
+
+    order = args["order_data"]
+    dataset_train = DataPointE2E(PATH_DATA_PREP, dataset_name, i=order[0])
+    dataset_val = DataPointE2E(PATH_DATA_PREP, dataset_name, i=order[1])
+    dataloaders = {"train": DataLoader(dataset_train, batch_size=1, shuffle=True, num_workers=0),
+                   "val": DataLoader(dataset_val, batch_size=1, shuffle=False, num_workers=0)}
+    try:
+        dataset_test = DataPointE2E(PATH_DATA_PREP, dataset_name, i=order[2])
+        dataloaders["test"] = DataLoader(dataset_test, batch_size=1, shuffle=False, num_workers=0)
+    except IndexError:
+        pass
+
+    model = build_e2e_model(args, dataset_train.info_v["Labels"])
+    model.to(args["device"])
+    if model.freeze_bn != "none":
+        nets = {"v": "CNN1", "T": "CNN2", "both": "CNN1 and CNN2"}[model.freeze_bn]
+        print(f"freeze_bn: {model.freeze_bn} - BatchNorm running statistics of {nets} stay fixed during stage 2 "
+              f"({'after bn_reestimate' if args.get('bn_reestimate', False) else 'baseline values'}); affine weights still train")
+    if model.detach_trajectory:
+        print("detach_trajectory ON: streamline gradient truncated at each RK4 step - dL/dv blames\n"
+              "  only the velocity each step sampled, not the whole upstream line. Its norm is far\n"
+              "  below the full-adjoint one; Adam rescales per-parameter, but consider raising\n"
+              "  lr_stage2 for a like-for-like comparison. grad_diag reports the actual route-S norm.")
+
+    if args["case"] in ["test", "finetune"]:
+        # two sources of weights: either one end-to-end checkpoint (model:) or the two separately
+        # trained baselines (model_v: + model_T:), which is how a two-stage run is continued e2e
+        if args.get("model_v") and args.get("model_T"):
+            print(f"Loading the two baselines for end-to-end {args['case']}:")
+            model.load_baselines(args["model_v"], args["model_T"], args["device"])
+        else:
+            assert args.get("model"), "case 'finetune'/'test' needs either model: or model_v: + model_T:"
+            model.load(args["model"], args["device"])
+    if args["case"] == "test":
+        model.eval()
+
+    # streamline-frame losses (FrameLoss): `frame` follows the run's seed_mode and enters the training
+    # loss with lambda_N / lambda_TOF; the two evaluators always write their metrics into
+    # measurements_test{,_start}.yaml, on the datapoint's heat-pump lines and on fixed random seeds
+    frames = build_frame_losses(args, model, dataset_train, PATH_DATA_PREP)
+    lambda_N = float(args.get("lambda_N") or 0.0)
+    lambda_TOF = float(args.get("lambda_TOF") or 0.0)
+    log_frame = bool(lambda_N or lambda_TOF or args.get("log_frame_metrics", False))
+
+    if args["case"] == "train":
+        # initialize both UNets ONCE here; the Solvers below run with finetune=True so that
+        # stage 2 does not wipe the stage-1 weights of unet_v
+        model.apply(weights_init)
+
+    # STAGE 1: pretrain CNN1 alone on velocity patches. The weights are cached to
+    # stage1_v/unet_v_pretrained.pt and reused (stage1_force: true retrains).
+    # With model_v, CNN1 is loaded from that step-1 run instead, so it is the same across experiments.
+    if args["case"] == "train" and args.get("model_v"):
+        print(f"STAGE 1 skipped - seeding CNN1 from {args['model_v']} (CNN2 stays randomly initialized):")
+        model.load_pretrained_v(args["model_v"], args["device"])
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        print("Seeded CNN1 check (paper step-1 reference: 22.3 / 32.7 m/y, Table 8 mean 27.4 / 30.9):")
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    elif args["case"] == "train" and args.get("stage1_epochs", 0) > 0:
+        stage1_dir = args["destination"] / "stage1_v"
+        stage1_dir.mkdir(parents=True, exist_ok=True)
+        stage1_ckpt = stage1_dir / "unet_v_pretrained.pt"
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+
+        if stage1_ckpt.exists() and not args.get("stage1_force", False):
+            print(f"STAGE 1: loading cached pretrained unet_v from {stage1_ckpt} "
+                  f"(skipping the {args['stage1_epochs']}-epoch pretraining; "
+                  f"delete the file or set stage1_force: true to retrain)")
+            model.unet_v.load_state_dict(torch.load(stage1_ckpt, map_location=args["device"]))
+        else:
+            cuts_train = SimulationDatasetCuts(dataset_train.path_v, skip_per_dir=args["skip_per_dir"],
+                                               box_size=args["len_box"], ids=order[0])
+            dataloaders_v = {"train": DataLoader(cuts_train, batch_size=args["batchsize"], shuffle=True, num_workers=0),
+                             "val": DataLoader(val_v, batch_size=1, shuffle=False, num_workers=0)}
+            args_stage1 = {**args, "epochs": args["stage1_epochs"], "destination": stage1_dir}
+
+            solver_v = Solver(model.unet_v, dataloaders_v["train"], dataloaders_v["val"],
+                              loss_func=MSELoss(), finetune=True, learning_rate=args["lr"])
+            solver_v.lr_schedule = {0: args["lr"]}
+            # stage1_lr_schedule: {epoch: lr} merged on top, same semantics as the stage-2 lr_schedule,
+            # e.g. baseline_v's learning_rate_history.csv; unset = constant lr as before
+            for at_epoch, at_lr in (args.get("stage1_lr_schedule") or {}).items():
+                solver_v.lr_schedule[int(at_epoch)] = float(at_lr)
+            solver_v.lr_schedule = dict(sorted(solver_v.lr_schedule.items()))
+            print(f"STAGE 1: velocity pretraining, {len(dataloaders_v['train'])} patch-batches/epoch, {args['stage1_epochs']} epochs, "
+                  f"lr schedule {solver_v.lr_schedule}")
+            stage1_time = datetime.now()
+            try:
+                solver_v.train(args_stage1)
+            except KeyboardInterrupt:
+                logging.warning(f"Manually stopping stage 1 early with best model found in epoch {solver_v.best_model_params['epoch']}.")
+            finally:
+                solver_v.save_lr_schedule(stage1_dir / "learning_rate_history.csv")
+            print(f"STAGE 1 finished after {datetime.now()-stage1_time}")
+            # solver_v.train() has already loaded the best unet_v weights back into the model
+            torch.save(model.unet_v.state_dict(), stage1_ckpt)
+            print(f"Saved stage-1 unet_v checkpoint to {stage1_ckpt}")
+            # release stage-1 memory (Solver, its Adam moments, the cut dataset/loaders) before the
+            # memory-heavy full-domain diagnostic and stage-2 forward
+            del solver_v, cuts_train, dataloaders_v
+            if "cuda" in str(args["device"]):
+                torch.cuda.empty_cache()
+
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    elif args["case"] == "finetune":
+        # sanity gate on the loaded CNN1: a wrong checkpoint or mismatched normalization stats show
+        # up here as a wildly off MAE, before any streamline or CNN2 issue can confuse the picture
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        print("Loaded CNN1 check (paper step-1 reference: 22.3 / 32.7 m/y):")
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    # BatchNorm re-estimation: CNN1 was trained on patch batches, stage 2 sees single full-domain
+    # samples. Recompute the BatchNorm buffers on full-domain inputs (weights unchanged).
+    if args.get("bn_reestimate", False) and args["case"] in ["train", "finetune"]:
+        print("Re-estimating BatchNorm statistics on full-domain inputs (weights unchanged):")
+        n_bn, n_passes = reestimate_bn_stats(model, dataloaders["train"], args["device"])
+        print(f"  {n_bn} BatchNorm layers updated from {n_passes} full-domain forward pass(es)")
+        # same velocity check as above, now with the re-estimated buffers
+        val_v = DataPoint(dataset_train.path_v, i=order[1])
+        print("CNN1 after re-estimation:")
+        print_velocity_mae(model.unet_v, val_v, dataset_train.info_v, args["device"])
+        del val_v
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    # Plots and test metrics of the stage-2 starting model (*_start), to compare with the end of the
+    # run. Before the gradient diagnostic, so grad_diag_only still produces them.
+    if args.get("visualize", False) and args["case"] in ["train", "finetune"]:
+        print("Rendering the stage-2 starting point (compare against val_e2e.png / test_e2e.png):")
+        visualize_e2e(model, dataloaders["val"], args, plot_path=args["destination"] / "val_e2e_start.png")
+        if "test" in dataloaders:
+            # same metrics as the end-of-run measurements_test.yaml, so the two files subtract
+            metrics_start = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"],
+                                         info_v=dataset_train.info_v, frame_evals=frames["evals"])
+            save_yaml(metrics_start, args["destination"] / "measurements_test_start.yaml")
+            print("Test-set metrics BEFORE stage 2:",
+                  *[f"  {k}: {v:.4f}" for k, v in metrics_start.items()], sep="\n")
+            visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e_start.png")
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    # per-term gradient norm at CNN1's output on the starting model, to balance lambda_N / lambda_TOF
+    # against the other terms by gradient norm rather than by loss value
+    if log_frame and args["case"] in ["train", "finetune"]:
+        x0, y0 = next(iter(dataloaders["train"]))
+        print_loss_gradient_norms(model, x0, y0, args, frames["train"], args["device"])
+        del x0, y0
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+
+    # Gradient diagnostic on the stage-2 starting model: CNN1's update through the streamlines vs.
+    # through the direct velocity channels. grad_diag_only stops after it.
+    if args.get("grad_diag", False) and args["case"] in ["train", "finetune"]:
+        from processing.e2e_grad_diag import diagnose_e2e_gradients
+        x0, y0 = next(iter(dataloaders["train"]))
+        diagnose_e2e_gradients(model, x0, y0, args, plot_path=args["destination"] / "grad_diag_stage2_start.png")
+        del x0, y0
+        if args.get("grad_diag_only", False):
+            return model
+
+    # freeze_weights: none | v | T keeps that net's weights fixed in stage 2 (requires_grad False, so
+    # Adam skips them). T: only CNN1 learns, from CNN2's error through the streamlines; v: only CNN2.
+    frozen_weights = args.get("freeze_weights") or "none"
+    assert frozen_weights in ("none", "v", "T"), f"freeze_weights must be none | v | T, got {frozen_weights!r}"
+    if frozen_weights != "none":
+        for p in (model.unet_v if frozen_weights == "v" else model.unet_T).parameters():
+            p.requires_grad_(False)
+        print(f"freeze_weights: {frozen_weights} - {'CNN1' if frozen_weights == 'v' else 'CNN2'}'s weights stay fixed in stage 2")
+    # cnn1_trainable: all | bn | bn_last | last - which part of CNN1 trains in stage 2. bn: only the
+    # BatchNorm affine gamma/beta; last: only the final 1x1 conv; bn_last: both. Few parameters, so CNN1
+    # has little capacity to memorize the single training sample.
+    cnn1_trainable = args.get("cnn1_trainable") or "all"
+    assert cnn1_trainable in ("all", "bn", "bn_last", "last"), f"cnn1_trainable must be all | bn | bn_last | last, got {cnn1_trainable!r}"
+    if cnn1_trainable != "all" and frozen_weights != "v":
+        keep = set() if cnn1_trainable == "last" else {
+            id(p) for m in model.unet_v.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm) for p in m.parameters()}
+        if cnn1_trainable in ("bn_last", "last"):
+            keep |= {id(p) for p in model.unet_v.conv.parameters()}
+        for p in model.unet_v.parameters():
+            p.requires_grad_(id(p) in keep)
+        n = sum(p.numel() for p in model.unet_v.parameters() if p.requires_grad)
+        print(f"cnn1_trainable: {cnn1_trainable} - {n:,} of {sum(p.numel() for p in model.unet_v.parameters()):,} CNN1 parameters train")
+
+    # STAGE 2: joint training of the full pipeline (CNN1 + streamlines + CNN2), full domain
+    if args["case"] in ["train", "finetune"]:
+        # loss = L(T) + lambda_v * L_v(v). Training: L = train_loss, L_v = v_loss (unset = train_loss).
+        # Validation (selects the best epoch): L = L_v = val_loss (unset = the training loss);
+        # val_loss_with_v: false drops the velocity term from the validation loss.
+        lambda_v = args.get("lambda_v", 0.0)
+        # lambda_traj > 0 adds the streamline-position loss (TrajectoryLoss): CNN1's streamlines vs the
+        # ones traced in the simulated velocity, training loss only
+        lambda_traj = float(args.get("lambda_traj") or 0.0)
+        # lambda_N / lambda_TOF > 0 add the streamline-frame losses (FrameLoss) on CNN1's velocity,
+        # training loss only
+        frame_on = bool(lambda_N or lambda_TOF)
+        train_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"),
+                                 lambda_traj=lambda_traj, traj=TrajectoryLoss(model) if lambda_traj else None,
+                                 lambda_N=lambda_N, lambda_TOF=lambda_TOF, frame=frames["train"] if frame_on else None)
+        val_loss_fct = None
+        if args.get("val_loss"):
+            val_loss_fct = E2ELoss(lambda_v=lambda_v if args.get("val_loss_with_v", True) else 0.0,
+                                   base=args["val_loss"])
+        elif frame_on:
+            # no separate val_loss: validation uses the training loss without the frame terms
+            val_loss_fct = E2ELoss(lambda_v=lambda_v, base=args["train_loss"], base_v=args.get("v_loss"),
+                                   lambda_traj=lambda_traj, traj=train_loss_fct.traj)
+        print(f"STAGE 2 losses: train {train_loss_fct.name}, "
+              f"val {(val_loss_fct if val_loss_fct is not None else train_loss_fct).name} (selects the best epoch)")
+        # optional per-step pipeline diagnostic: every N optimizer steps, save each stage's
+        # input/output and the loss gradients on both sides of it (pipeline_plot_every: 0 = off)
+        tap = PipelineTap(every=args.get("pipeline_plot_every", 0),
+                          destination=args["destination"],
+                          max_plots=args.get("pipeline_plot_max", 0),
+                          t_stats=dataset_train.info_T["Labels"]["Temperature [C]"],
+                          traj_loss=train_loss_fct.traj, lambda_traj=train_loss_fct.lambda_traj,
+                          frame_loss=train_loss_fct.frame, lambda_N=lambda_N, lambda_TOF=lambda_TOF)
+        if tap.enabled:
+            print(f"pipeline diagnostic: every {tap.every} optimizer steps"
+                  + (f", at most {tap.max_plots} plots" if tap.max_plots > 0 else "")
+                  + f" -> {tap.dir}")
+
+        # lr_stage2 overrides `lr` for stage 2 only (unset = `lr`)
+        lr2 = float(args.get("lr_stage2") or args["lr"])
+        solver = Solver(model, dataloaders["train"], dataloaders["val"],
+                        loss_func=train_loss_fct, val_loss_func=val_loss_fct,
+                        finetune=True, learning_rate=lr2,
+                        clip_grad_norm=args.get("clip_grad", 1.0),
+                        pipeline_tap=tap if tap.enabled else None,
+                        epoch_callback=chain_callbacks(make_v_blur_schedule(model, args),
+                                                       frames["train"].set_epoch if log_frame else None))
+        # distance to the simulated velocity's lines, logged every epoch (also with lambda_traj 0)
+        solver.metrics["traj [cells]"] = TrajectoryLoss(model)
+        if log_frame:  # "train L_N", "val L_N", ... per epoch (and in measurements.yaml)
+            for name in ("L_N", "L_TOF", "angle [deg]"):
+                solver.metrics[name] = frames["train"].metric(name)
+        # lr schedule, constant by default; lr_schedule: {epoch: lr} sets further points
+        solver.lr_schedule = {0: lr2}
+        for at_epoch, at_lr in (args.get("lr_schedule") or {}).items():
+            solver.lr_schedule[int(at_epoch)] = float(at_lr)
+        sched = dict(sorted(solver.lr_schedule.items()))
+        print("STAGE 2 lr schedule: "
+              + ", ".join(f"epoch {e} -> {v:.2e}" for e, v in sched.items())
+              + f"   (base from {'lr_stage2' if args.get('lr_stage2') else 'lr'})")
+        never = [e for e in sched if e >= args["epochs"]]
+        if never:
+            print(f"  WARNING: entries at epoch(s) {never} are at or beyond the last epoch "
+                  f"({args['epochs']}) and will never apply")
+        print(f"STAGE 2: joint end-to-end training, {args['epochs']} epochs")
+        training_time = datetime.now()
+        try:
+            solver.train(args, optuna_trial=optuna_trial)
+        except KeyboardInterrupt:
+            logging.warning(f"Manually stopping training early with best model found in epoch {solver.best_model_params['epoch']}.")
+        finally:
+            solver.save_lr_schedule(args["destination"] / "learning_rate_history_stage2.csv")
+            print(solver.clip_report())
+            print("Training finished")
+
+        training_time = datetime.now() - training_time
+        model.best_val_loss = solver.best_model_params["loss"]  # objective of a hyperparameter search
+        model.save(args["destination"])
+        solver.save_metrics_separate_yaml(args["destination"], model.num_of_params(), args["epochs"], training_time.total_seconds(), args["device"])
+
+    visualize_e2e(model, dataloaders["val"], args, plot_path=args["destination"] / "val_e2e.png")
+
+    if "test" in dataloaders:
+        metrics_test = evaluate_e2e(model, dataloaders["test"], dataset_train.info_T, args["device"],
+                                    info_v=dataset_train.info_v, frame_evals=frames["evals"])
+        save_yaml(metrics_test, args["destination"] / "measurements_test.yaml")
+        print("Test-set metrics:", *[f"  {k}: {v:.4f}" for k, v in metrics_test.items()], sep="\n")
+        visualize_e2e(model, dataloaders["test"], args, plot_path=args["destination"] / "test_e2e.png")
+    return model
+
+
+# Hyperparameters an e2e search may vary: keys of HPS_options.yaml, of command_line_arguments.yaml,
+# and CNN2's architecture keys (written into unet_args_T). Architecture keys of a net that is loaded
+# from a checkpoint must not be searched.
+E2E_SEARCH_KEYS_HPS = ("lr", "train_loss", "v_loss", "depth", "init_features", "kernel_size")
+E2E_SEARCH_KEYS_CLA = ("v_blur", "sigma", "lambda_v", "lambda_traj", "clip_grad", "freeze_bn",
+                       "detach_direct_v", "detach_trajectory", "bn_reestimate",
+                       "lambda_N", "lambda_TOF", "seed_mode")
+E2E_SEARCH_KEYS_CNN2 = {"depth_T": "depth", "init_features_T": "init_features", "kernel_size_T": "kernel_size"}
+
+
+def run_e2e(trial, args: Dict, PATH_DATA_PREP: Path):
+    """One optuna trial of the end-to-end pipeline; returns that run's best validation loss.
+
+    Each trial runs in <destination>/trials/<number>/ with its drawn configuration. Keys that
+    HPS_options.yaml does not list keep the value from the search folder's command_line_arguments.yaml.
+    """
+    base = args["destination"]
+    config = load_yaml(base / "HPS_options.yaml")
+    args = dict(args)  # optuna reuses the same args dict for every trial
+    hps = {k: (dict(v) if isinstance(v, dict) else v) for k, v in config.items()}
+
+    drawn = {}
+    for key in E2E_SEARCH_KEYS_HPS + E2E_SEARCH_KEYS_CLA:
+        if key not in config and args.get(key) is None:
+            continue  # neither searched nor set: leave HPS_options / the run's default untouched
+        args[key] = suggest_hyperparam(trial, config, key, args.get(key))
+        hps[key] = {"values": [args[key]]}  # resolved to one value - the form load_hyperparams reads
+        if key in config:
+            drawn[key] = args[key]
+    unet_args_T = dict(args.get("unet_args_T") or {})
+    for key, unet_key in E2E_SEARCH_KEYS_CNN2.items():
+        if key in config:
+            unet_args_T[unet_key] = suggest_hyperparam(trial, config, key, unet_args_T.get(unet_key))
+            drawn[key] = unet_args_T[unet_key]
+    args["unet_args_T"] = unet_args_T or None
+    # architecture keys must stay fixed where a net is loaded from a checkpoint: CNN1 with case
+    # finetune or model_v, CNN2 with case finetune
+    fixed = ["depth", "init_features", "kernel_size"] if (args["case"] == "finetune" or args.get("model_v")) else []
+    fixed += list(E2E_SEARCH_KEYS_CNN2) if args["case"] == "finetune" else []
+    searched = [k for k in fixed if isinstance(config.get(k), dict) and len(config[k].get("values", [None, None])) > 1]
+    assert not searched, (f"architecture keys {searched} are searched, but that net is loaded from a "
+                          f"checkpoint (case finetune / model_v) - search them only from scratch")
+    # lr comes from HPS_options; lr_stage2 and lr_schedule entries would silently override it
+    assert not args.get("lr_stage2"), "a search config must not set lr_stage2 - it overrides the searched lr"
+    assert not args.get("lr_schedule"), "a search config must not set lr_schedule - it overrides the searched lr"
+    if "v_blur" in config and "v_blur_end" not in config:
+        args["v_blur_end"] = args["v_blur"]  # searched blur stays constant unless annealing is searched too
+
+    trial_dir = base / "trials" / str(trial.number)
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    args["destination"] = trial_dir
+    save_yaml(hps, trial_dir / "HPS_options.yaml")
+    save_yaml(args, trial_dir / "command_line_arguments.yaml")
+    print(f"=== trial {trial.number} -> {trial_dir}: " + ", ".join(f"{k}={v}" for k, v in drawn.items()), flush=True)
+
+    try:
+        model = training_e2e(args, PATH_DATA_PREP, optuna_trial=trial)
+        val_loss = float(model.best_val_loss)
+        del model
+    except torch.cuda.OutOfMemoryError as e:
+        import optuna
+        print(f"=== trial {trial.number}: out of memory, pruned ({str(e)[:100]})", flush=True)
+        raise optuna.TrialPruned("out of memory") from e
+    finally:
+        if "cuda" in str(args["device"]):
+            torch.cuda.empty_cache()
+    print(f"=== trial {trial.number}: best val loss {val_loss:.6e}", flush=True)
+    return val_loss
+
+
+def reestimate_bn_stats(model, dataloader, device):
+    """Recompute every BatchNorm's running_mean/running_var from full-domain inputs; weights and
+    optimizer state are unchanged. momentum=None gives an exact average over one pass of the dataloader.
+
+    Returns (number of BatchNorm layers, number of forward passes).
+    """
+    bns = [m for m in model.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+    if not bns:
+        return 0, 0
+    saved_momentum = [m.momentum for m in bns]
+    for m in bns:
+        m.reset_running_stats()
+        m.momentum = None
+    was_training = model.training
+    # re-estimation needs every BN layer in train mode; a freeze_bn setting applies again afterwards
+    saved_freeze = getattr(model, "freeze_bn", "none")
+    model.freeze_bn = "none"
+    model.train()
+    n_passes = 0
+    with torch.no_grad():
+        for x, _ in dataloader:
+            model(x.to(device))
+            n_passes += 1
+    for m, mom in zip(bns, saved_momentum):
+        m.momentum = mom
+    model.freeze_bn = saved_freeze
+    model.train(was_training)
+    return len(bns), n_passes
+
+
+def build_frame_losses(args, model, dataset_train, path_data_prep: Path, eval_field: dict = None) -> dict:
+    """The FrameLoss objects of one run, sharing one resolved eps / travel-time floor:
+    "train": the run's options (seed_mode etc.); enters the training loss and the per-epoch metrics.
+    "evals": {"hp": ..., "random": ...} for measurements_test{,_start}.yaml - the datapoint's heat-pump
+             lines (no offsets) and n_seeds fixed random seeds, with the run's other frame options.
+    eval_field: the evaluators run on a field of another size (scaling test): {"field_shape": (H, W),
+             "seed_box_raw": ((a0, b0), (a1, b1))}. eps stays that of the training datapoint; it is
+             resolved on the first call, so call frame._resolve_eps(<training output region>) before
+             the first evaluation on such a field.
+    Nothing is traced here; each object traces its lines on first use and caches them."""
+    options = {k: args[k] for k in FrameLoss.DEFAULTS if args.get(k) is not None}
+    _, y = dataset_train[0]
+    # physical simulated velocity [m/y] of the training datapoint, for frame_eps = "pX"
+    v_ref = y[1:3].float() * model.v_delta.cpu() + model.v_min.cpu()
+    origin = (subdomain.WINDOW[0], subdomain.WINDOW[2]) if subdomain.is_enabled() else (0, 0)
+    well = None
+    if options.get("well_mask_mode", FrameLoss.DEFAULTS["well_mask_mode"]) == "flow":
+        # the simulation inputs: data_raw itself, or the raw dataset next to the prep folder
+        name = Path(args["data_raw"]).name
+        candidates = [Path(args["data_raw"]), Path(path_data_prep).parent / "datasets" / name]
+        found = [c for c in candidates if (c / "inputs" / "settings.yaml").exists()]
+        assert found, f"well_mask_mode flow: no inputs/settings.yaml in {[str(c) for c in candidates]}"
+        well = well_parameters(found[0])
+        print(f"frame loss well mask (flow): Q {well['Q']:.0f} m^3/y, b {well['b']} m, phi {well['phi']}")
+    common = dict(eps_reference=v_ref, raw_origin=origin, field_shape=tuple(y.shape[1:]), well_params=well,
+                  shared={})
+    common_eval, random_box = dict(common), {}
+    if eval_field is not None:
+        common_eval["field_shape"] = tuple(eval_field["field_shape"])
+        random_box = {"seed_box_raw": eval_field["seed_box_raw"]}
+    frames = {"train": FrameLoss(model, **common, **options),
+              "evals": {"hp": FrameLoss(model, **common_eval, **{**options, "seed_mode": "hp", "seed_hp_offsets": False}),
+                        "random": FrameLoss(model, **common_eval, **{**options, "seed_mode": "random", **random_box})}}
+    del y
+    return frames
+
+
+def chain_callbacks(*fns):
+    """One epoch callback from several (None entries are skipped); None if there is none."""
+    fns = [f for f in fns if f is not None]
+    if len(fns) <= 1:
+        return fns[0] if fns else None
+
+    def run(epoch):
+        for f in fns:
+            f(epoch)
+    return run
+
+
+def print_loss_gradient_norms(model, x, y, args, frame, device):
+    """||dL_term/dv_norm|| at CNN1's output for every loss term on the stage-2 starting model, raw and
+    times the run's lambda (for balancing lambda_N / lambda_TOF). Eval-mode BatchNorm.
+    Two forwards, since the compiled RK4 step allows only one backward: the full pipeline for the
+    T loss, then CNN1 alone for the velocity terms."""
+    was_training = model.training
+    model.eval()
+    base, base_v = args["train_loss"].lower(), (args.get("v_loss") or args["train_loss"]).lower()
+
+    def forward():
+        pred = model(x)
+        h, w = pred.shape[2:]
+        i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
+        return pred, model.tapped["v_norm"], y[:, :, i0:i0 + h, j0:j0 + w]
+
+    def grad_norm(term, v_norm, retain):
+        (g,) = torch.autograd.grad(term, v_norm, retain_graph=retain, allow_unused=True)
+        return float(torch.nan_to_num(g).norm()) if g is not None else 0.0
+
+    results = {}
+    model.capture_intermediates = True
+    try:
+        x, y = x.to(device), y.to(device)
+        pred, v_norm, y_crop = forward()
+        term = E2ELoss.BASES[base]()(pred[:, 0:1], y_crop[:, 0:1])
+        results["T loss"] = (1.0, float(term.detach()), grad_norm(term, v_norm, False))
+        T_pred = pred[:, 0:1].detach()
+        del pred, v_norm, term
+        model.tapped = {}
+        v_norm = model.unet_v(x)  # same values as in the forward above (eval mode)
+        ht, wt = T_pred.shape[2:]
+        it, jt = (v_norm.shape[2] - ht) // 2, (v_norm.shape[3] - wt) // 2  # the model's crop to T's size
+        pred = torch.cat([T_pred, v_norm[:, :, it:it + ht, jt:jt + wt]], dim=1)
+        f = frame(pred, y_crop)
+        items = [("v loss", float(args.get("lambda_v", 0.0) or 0.0), lambda: E2ELoss.BASES[base_v]()(pred[:, 1:3], y_crop[:, 1:3])),
+                 ("L_N", float(args.get("lambda_N") or 0.0), lambda: f["L_N"]),
+                 ("L_TOF", float(args.get("lambda_TOF") or 0.0), lambda: f["L_TOF"]),
+                 ("traj", float(args.get("lambda_traj") or 0.0), lambda: TrajectoryLoss(model)(pred, y_crop))]
+        for k, (name, lam, make_term) in enumerate(items):
+            term = make_term()
+            results[name] = (lam, float(term.detach()), grad_norm(term, v_norm, k < len(items) - 1))
+    finally:
+        model.capture_intermediates = False
+        model.tapped = {}
+        model.train(was_training)
+    print(f"Loss terms at the stage-2 start (seed_mode {frame.opt['seed_mode']}, eval-mode BatchNorm): "
+          f"value | ||d term / d v_norm|| at CNN1's output, raw and x lambda")
+    for name in ("T loss", "v loss", "traj", "L_N", "L_TOF"):
+        lam, value, g_norm = results[name]
+        print(f"  {name:7s} {value:.4e} | raw {g_norm:.3e}   x lambda {lam:g} = {lam * g_norm:.3e}")
+
+
+def make_v_blur_schedule(model, args):
+    """Epoch callback that anneals the tracer's velocity smoothing linearly from v_blur to v_blur_end,
+    or None if it stays constant."""
+    start = float(args.get("v_blur", 0.0) or 0.0)
+    end = args.get("v_blur_end")
+    if start <= 0 and end in (None, 0, 0.0):
+        return None
+    end = start if end is None else float(end)
+    n = int(args["epochs"])
+    if end == start:
+        print(f"tracer velocity smoothing: v_blur = {start} (constant)")
+        return None  # model.v_blur is already set from the config; no per-epoch work to do
+    print(f"tracer velocity smoothing: v_blur {start} -> {end} linearly over {n} epochs")
+
+    def set_v_blur(epoch):
+        frac = min(epoch / max(n - 1, 1), 1.0)
+        model.v_blur = start + (end - start) * frac
+    return set_v_blur
+
+
+def print_velocity_mae(unet_v, dataset_val, info_v, device):
+    """Stage-1 diagnostic: velocity MAE on the val datapoint in [m/y] (paper Step-1: 22.3/32.7)."""
+    unet_v.eval()
+    x, y = dataset_val[0]
+    with torch.no_grad():
+        v_pred = unet_v(x.unsqueeze(0).to(device)).cpu()
+    h, w = v_pred.shape[2:]
+    i0, j0 = (y.shape[1] - h) // 2, (y.shape[2] - w) // 2
+    y_crop = y[:, i0:i0+h, j0:j0+w].unsqueeze(0)
+    for ch, name in [(0, "Liquid X-Velocity [m_per_y]"), (1, "Liquid Y-Velocity [m_per_y]")]:
+        delta = info_v["Labels"][name]["max"] - info_v["Labels"][name]["min"]
+        print(f"  stage-1 val MAE v{'x' if ch == 0 else 'y'}: {float((v_pred[:, ch] - y_crop[:, ch]).abs().mean() * delta):.1f} m/y")
+
+
+def moc_e2e(x, T_pred_C, info_v, threshold: float = 10.7) -> float:
+    """MoC [%] (Pelzer et al.), mean over the batch: connectivityLoss per datapoint on the un-normalized
+    inputs cropped to the output region, threshold 10.7 degC.
+    x: normalized pki input [B, 3, H, W], T_pred_C: T prediction [B, 1, h, w] in degC (both CPU)."""
+    h, w = T_pred_C.shape[2:]
+    i0, j0 = (x.shape[2] - h) // 2, (x.shape[3] - w) // 2
+    norm = NormalizeTransform(info_v)
+    values = []
+    for x_b, T_b in zip(x, T_pred_C):
+        inputs = norm.reverse(x_b[:, i0:i0+h, j0:j0+w].clone(), data_type="Inputs")
+        values.append(connectivityLoss(inputs, T_b, id_mat_ids=info_v["Inputs"]["Material ID"]["index"],
+                                       threshold=threshold)["unconnected_percentage"])
+    return float(np.mean(values))
+
+
+def evaluate_e2e(model, dataloader, info_T, device, info_v=None, frame_evals=None):
+    """Paper-style metrics of the e2e pipeline: T metrics in [degC], SSIM on the normalized fields.
+    "traj dist [cells]": mean equal-time distance of CNN1's streamlines to the simulated ones.
+    info_v: also the velocity MAE [m/y] and "MoC [%]".
+    frame_evals {name: FrameLoss}: also "L_N <name>", "L_TOF <name>" and "angle [deg] <name>"."""
+    stats = info_T["Labels"]["Temperature [C]"]
+    delta = stats["max"] - stats["min"]
+    mse, mae, huber = MSELoss(), L1Loss(), HuberLoss()
+    model.eval()
+    traj = TrajectoryLoss(model)
+    collected = []
+    with torch.no_grad():
+        for x, y in dataloader:
+            pred_dev = model(x.to(device))
+            pred = pred_dev.cpu()
+            h, w = pred.shape[2:]
+            i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
+            y_crop = y[:, :, i0:i0+h, j0:j0+w]
+            traj_dist = float(traj(pred_dev, y_crop.to(device)))  # needs model.last_hp of this forward
+            frame_metrics = {}
+            for seeds, frame in (frame_evals or {}).items():  # also reads model.last_hp of this forward
+                for name, value in frame(pred_dev, y_crop.to(device)).items():
+                    frame_metrics[f"{name} {seeds}"] = float(value)
+            T_pred, T_label = pred[:, 0:1], y_crop[:, 0:1]
+            pred_C, label_C = T_pred * delta + stats["min"], T_label * delta + stats["min"]
+            metrics = {
+                "MAE [degC]": float(mae(pred_C, label_C)),
+                "RMSE [degC]": float(mse(pred_C, label_C)) ** 0.5,
+                "Huber [degC]": float(huber(pred_C, label_C)),
+                "Linf [degC]": float((pred_C - label_C).abs().max()),
+                "SSIM": float(SSIMLoss()(T_pred, T_label)),
+                "PAT0.1 [%]": float(PATLoss([0.1])(pred_C, label_C).mean()),
+                "PAT1.0 [%]": float(PATLoss([1.0])(pred_C, label_C).mean()),
+                "traj dist [cells]": traj_dist,
+                **frame_metrics,
+            }
+            if info_v is not None:
+                metrics["MoC [%]"] = moc_e2e(x, pred_C, info_v)
+                for ch, name in [(1, "Liquid X-Velocity [m_per_y]"), (2, "Liquid Y-Velocity [m_per_y]")]:
+                    v_stats = info_v["Labels"][name]
+                    v_delta = v_stats["max"] - v_stats["min"]
+                    metrics[f"MAE v{'x' if ch == 1 else 'y'} [m/y]"] = float(
+                        mae(pred[:, ch:ch+1] * v_delta, y_crop[:, ch:ch+1] * v_delta))
+            collected.append(metrics)
+    return {name: sum(m[name] for m in collected) / len(collected) for name in collected[0]}
+
+
+def visualize_e2e(model, dataloader, args, plot_path: Path):
+    """3x3 panels: T (prediction/label/error), vx and vy (prediction/simulated label), the
+    velocity error magnitude and the traced streamlines. Prediction/label share one color
+    scale for T; all four velocity panels share one scale."""
+    model.eval()
+    x, y = next(iter(dataloader))
+    with torch.no_grad():
+        pred = model(x.to(args["device"])).cpu()
+    sf = model.last_intermediates["sf"].cpu()[0, 0]
+    sf_outer = model.last_intermediates["sf_outer"].cpu()[0, 0]
+
+    # center-crop the label to the prediction; de-normalize T to [degC]
+    h, w = pred.shape[2:]
+    i0, j0 = (y.shape[2] - h) // 2, (y.shape[3] - w) // 2
+    y_crop = y[:, :, i0:i0+h, j0:j0+w].clone()
+    stats = dataloader.dataset.info_T["Labels"]["Temperature [C]"]
+    to_degC = lambda t: t * (stats["max"] - stats["min"]) + stats["min"]
+    T_pred, T_label = to_degC(pred[0, 0]), to_degC(y_crop[0, 0])
+    v_pred, v_label = pred[0, 1:3], y_crop[0, 1:3]
+
+    # shared color scales, so prediction and label panels are directly comparable
+    T_lim = (min(float(T_pred.min()), float(T_label.min())), max(float(T_pred.max()), float(T_label.max())))
+    v_lim = (min(float(v_pred.min()), float(v_label.min())), max(float(v_pred.max()), float(v_label.max())))
+    v_err = (v_pred - v_label).norm(dim=0)
+
+    fig, axes = plt.subplots(3, 3, figsize=(18, 16))
+    panels = [(T_pred, "prediction T [degC]", "RdBu_r", T_lim), (T_label, "label T [degC]", "RdBu_r", T_lim),
+              ((T_pred - T_label).abs(), "abs error T [degC]", "magma", None),
+              (v_pred[0], "predicted vx (normed)", "viridis", v_lim), (v_label[0], "simulated vx (normed)", "viridis", v_lim),
+              (v_err, "velocity error |v_pred - v_sim| (normed)", "magma", None),
+              (v_pred[1], "predicted vy (normed)", "viridis", v_lim), (v_label[1], "simulated vy (normed)", "viridis", v_lim),
+              (sf + sf_outer, "streamlines (soft, sf + sf_outer)", "magma", None)]
+    for ax, (data, title, cmap, lim) in zip(axes.flat, panels):
+        vmin, vmax = lim if lim is not None else (None, None)
+        im = ax.imshow(data.numpy().T, origin="lower", cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest")
+        ax.set_title(title, fontsize=10)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=120)
+    plt.close(fig)
+    print(f"Saved visualization to {plot_path}")

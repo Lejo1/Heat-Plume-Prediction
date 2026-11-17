@@ -1,0 +1,46 @@
+pipeline: e2e
+case: finetune
+data_prep: null
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination: null
+device: cuda
+subdomain: false
+model: null
+model_v: ../../models/BEST_predict_v_v4
+model_T: ../../models/BEST_predict_T_add_s_outer
+unet_args_T:
+  kernel_size: 4
+epochs: 30
+stage1_epochs: 0
+inputs: pki
+outputs: t
+notes: CNN1 alone through streamlines (CNN2 frozen)
+visualize: true
+randomK: true
+t_steps: 10000
+sigma: 1.0
+fade_mode: absolute
+lr_schedule:
+  0: 1.0e-05
+clip_grad: 10000.0
+lambda_traj: 0.0
+lambda_v: 0.01
+val_loss: Huber
+val_loss_with_v: false
+detach_direct_v: true
+detach_trajectory: false
+compile: true
+stage1_force: false
+bn_reestimate: false
+freeze_bn: T
+grad_diag: false
+grad_diag_only: false
+pipeline_plot_every: 0
+pipeline_plot_max: 0
+v_blur: 1.0
+v_blur_end: 1.0
+order_data:
+  - 0
+  - 1
+  - 2
+freeze_weights: T

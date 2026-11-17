@@ -1,0 +1,58 @@
+# Hyperparameter search of the end-to-end finetuning:
+#   cd code && python main.py --destination hsearch_e2e --hsearch True
+# Each trial runs in hsearch_e2e/trials/<number>/. The search space is HPS_options.yaml; the values here
+# are used for every key it does not list. Objective: the best val_loss of a trial.
+pipeline: e2e
+case: finetune
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false
+
+# --- study -----------------------------------------------------------------------------------
+n_trials: 20              # trials per call of main.py; the study continues on the next call
+pruner_startup_trials: 3  # MedianPruner: no pruning before this many finished trials
+pruner_warmup_epochs: 10  # and not before this epoch within a trial
+
+# --- fixed setup -----------------------------------------------------------------------------
+model: null
+model_v: ../../models/BEST_predict_v_v4
+model_T: ../../models/BEST_predict_T_add_s_outer
+unet_args_T:
+  kernel_size: 4
+epochs: 40         # per trial
+stage1_epochs: 0
+inputs: pki
+outputs: t
+notes: hyperparameter search (e2e stage 2)
+randomK: true
+t_steps: 10000
+fade_mode: absolute
+compile: true
+stage1_force: false
+val_loss: Huber         # objective: Huber(T) on the validation datapoint
+val_loss_with_v: false
+order_data:
+- 0
+- 1
+- 2
+
+# --- defaults for keys HPS_options.yaml does not list ----------------------------------------
+lr_schedule:              # must stay empty (as lr_stage2): it would override the searched lr
+sigma: 1.0
+v_blur: 1.0
+v_blur_end: 1.0           # follows the drawn v_blur while v_blur is searched
+lambda_v: 0.01
+clip_grad: 10.0
+detach_direct_v: true
+detach_trajectory: false
+bn_reestimate: false
+freeze_bn: none
+
+# --- diagnostics, written per trial ----------------------------------------------------------
+visualize: true
+grad_diag: true
+grad_diag_only: false
+pipeline_plot_every: 5
+pipeline_plot_max: 40

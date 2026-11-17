@@ -1,0 +1,7 @@
+case: train
+data_prep: ../datasets_prep/dataset_giant_100hp_varyK inputs_ixyk outputs_t for_s
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination: ../models/tmp
+inputs: ixyk
+model: null
+outputs: t

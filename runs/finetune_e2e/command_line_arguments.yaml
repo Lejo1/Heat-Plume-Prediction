@@ -1,0 +1,64 @@
+# End-to-end finetuning of the two-step pipeline (BEST_V + BEST_T) with the trajectory loss:
+#   cd code && python main.py --destination finetune_e2e
+pipeline: e2e
+case: finetune     # load pretrained weights (no re-initialization)
+data_prep:
+data_raw: ../datasets/dataset_giant_100hp_varyK
+destination:
+device: cuda
+subdomain: false   # true = one hardcoded 736^2 window instead of the full field (debugging, preprocessing/subdomain.py)
+
+# --- pretrained nets -------------------------------------------------------------------------
+# CNN1 and CNN2 are loaded from two separately trained runs (paths relative to code/) instead of
+# one end-to-end checkpoint (model:).
+model: null
+model_v: ../../models/BEST_predict_v_v4
+model_T: ../../models/BEST_predict_T_add_s_outer
+#model_v: ../runs/baseline_v   # alternative: the retrained baselines of this repo
+#model_T: ../runs/baseline_T
+unet_args_T:       # CNN2's architecture where it differs from CNN1's (HPS_options.yaml)
+  kernel_size: 4
+
+epochs: 100
+stage1_epochs: 0   # no velocity pretraining, CNN1 is loaded
+inputs: pki
+outputs: t
+notes: end-to-end finetuning of BEST_V + BEST_T with the trajectory loss
+visualize: true
+randomK: true      # true for the varyK datasets (main flow direction switched)
+
+# --- streamlines -----------------------------------------------------------------------------
+t_steps: 10000     # streamline samples; also caps the RK4 steps
+sigma: 1.0         # width of the soft drawing [cells]; must stay below SIGMA_BLUR_MIN (1.5)
+fade_mode: absolute
+
+# --- optimization ----------------------------------------------------------------------------
+lr_schedule:       # stage-2 lr by epoch
+  0: 0.00001
+clip_grad: 10000.0 # cap on the global gradient norm
+lambda_traj: 0.0003  # trajectory loss (mean distance [cells] to the lines of the simulated velocity),
+                     # training loss only; 0 = off
+lambda_v: 0.01     # weight of the velocity term (its loss type: v_loss in HPS_options.yaml); 0 = T loss only
+val_loss: Huber    # validation loss, selects the best epoch: MSE | MAE | Huber
+val_loss_with_v: false    # false = validation loss on T only
+detach_direct_v: true     # true = CNN1 gets the T-loss gradient only through the streamlines
+detach_trajectory: false  # true = truncated gradient (no backpropagation between RK4 steps)
+compile: true      # torch.compile the RK4 step
+stage1_force: false
+bn_reestimate: false  # recompute the BatchNorm statistics on full-domain inputs before stage 2
+freeze_bn: v          # none | v | T | both: BatchNorm statistics of CNN1 (v) / CNN2 (T) stay fixed in stage 2
+
+# --- diagnostics -----------------------------------------------------------------------------
+grad_diag: true          # plot of CNN1's gradient through the streamlines vs. the direct velocity channels
+grad_diag_only: false    # true = stop after the diagnostic
+pipeline_plot_every: 5   # every N optimizer steps: each stage's in/output and gradients (0 = off)
+pipeline_plot_max: 40    # at most this many plots (0 = unlimited)
+
+# --- tracer velocity smoothing ---------------------------------------------------------------
+v_blur: 1.0        # Gaussian smoothing of the velocity the tracer reads [cells] (0 = off)
+v_blur_end: 1.0    # annealed linearly to this value over all epochs (null = constant)
+
+order_data:
+- 0
+- 1
+- 2

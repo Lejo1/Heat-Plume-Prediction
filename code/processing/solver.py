@@ -2,8 +2,10 @@ import logging
 from pathlib import Path
 import time
 from dataclasses import dataclass
+import torch
 from torch import manual_seed
 from torch.nn import Module, modules, MSELoss, HuberLoss
+from torch.nn.utils import clip_grad_norm_
 from torch.optim import Adam, Optimizer, LBFGS
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -13,6 +15,18 @@ from copy import deepcopy
 from postprocessing.visualization import visualizations
 from processing.networks.model import weights_init
 from utils.utils_args import save_yaml
+
+def _snapshot(obj):
+    """Deep copy of a state_dict with every tensor detached, cloned and moved to the CPU
+    (state_dict() returns the live tensors, which training keeps changing)."""
+    if torch.is_tensor(obj):
+        return obj.detach().cpu().clone()
+    if isinstance(obj, dict):
+        return {k: _snapshot(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_snapshot(v) for v in obj)
+    return obj  # ints, floats, strings: immutable, safe to share
+
 
 @dataclass
 class Solver(object):
@@ -26,8 +40,14 @@ class Solver(object):
     finetune: bool = False
     best_model_params: dict = None
     metrics: dict = None
+    clip_grad_norm: float = None  # cap on the global gradient L2 norm; None = off
+    pipeline_tap: object = None  # optional PipelineTap: plots each stage's in/output and gradients every N steps
+    epoch_callback: object = None  # optional fn(epoch) run at the start of each epoch, e.g. v_blur annealing
+    val_loss_func: modules.loss._Loss = None  # loss of the validation pass, which also selects the best epoch; None = loss_func
 
     def __post_init__(self):
+        if self.val_loss_func is None:
+            self.val_loss_func = self.loss_func
         self.opt = self.opt(self.model.parameters(),self.learning_rate, weight_decay=1e-4)
         # contains the epoch and learning rate, when lr changes
         self.lr_schedule = {0: self.opt.param_groups[0]["lr"]}
@@ -35,9 +55,13 @@ class Solver(object):
         if not self.finetune:
             self.model.apply(weights_init)
         
+        # "train/val Huber": Huber over all output channels of the last batch of each pass
         self.metrics: dict = {"Huber": HuberLoss(), }
+        # how often clip_grad_norm engaged, see clip_report()
+        self.clip_stats = {"steps": 0, "clipped": 0, "max_norm": 0.0,
+                           "nonfinite_steps": 0, "nonfinite_tensors": 0}
 
-    def train(self, args: dict):
+    def train(self, args: dict, optuna_trial=None):
         manual_seed(0)
         start_time = time.perf_counter()
         # initialize tensorboard
@@ -60,6 +84,10 @@ class Solver(object):
                 # Set lr according to schedule
                 if epoch in self.lr_schedule.keys():
                     self.opt.param_groups[0]["lr"] = self.lr_schedule[epoch]
+
+                # other schedules (v_blur annealing), before train and val
+                if self.epoch_callback is not None:
+                    self.epoch_callback(epoch)
                     
                 # Training
                 self.model.train()
@@ -67,7 +95,7 @@ class Solver(object):
                 
                 # Validation
                 self.model.eval()
-                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+                val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device, self.val_loss_func)
                 if False: # realK
                     val_epoch_loss = other_losses_val["Huber"] # TODO for realK
 
@@ -85,15 +113,22 @@ class Solver(object):
                                 
                 # Keep best model
                 if self.best_model_params is None or val_epoch_loss < self.best_model_params["loss"]:
+                    # _snapshot: a copy, not references to the live tensors
                     self.best_model_params = {
                         "epoch": epoch,
                         "loss": val_epoch_loss,
                         "train loss": train_epoch_loss,
-                        "state_dict": self.model.state_dict(),
-                        "optimizer": self.opt.state_dict(),
-                        "parameters": self.model.parameters(),
+                        "state_dict": _snapshot(self.model.state_dict()),
+                        "optimizer": _snapshot(self.opt.state_dict()),
                         "training time in sec": (time.perf_counter() - start_time),
                     }
+
+                # hyperparameter search: report this epoch, the pruner may stop the trial
+                if optuna_trial is not None:
+                    import optuna
+                    optuna_trial.report(val_epoch_loss, epoch)
+                    if optuna_trial.should_prune():
+                        raise optuna.TrialPruned(f"pruned in epoch {epoch}, val loss {val_epoch_loss:.4e}")
 
             except KeyboardInterrupt:
                 # allows to interrupt training with ctrl+c to change the lr manually
@@ -122,7 +157,9 @@ class Solver(object):
 
         return self.best_model_params["loss"]
 
-    def run_epoch(self, dataloader: DataLoader, device: str):
+    def run_epoch(self, dataloader: DataLoader, device: str, loss_func: modules.loss._Loss = None):
+        if loss_func is None:
+            loss_func = self.loss_func
         epoch_loss = 0.0
         for x, y in dataloader:
             x = x.to(device)
@@ -144,15 +181,41 @@ class Solver(object):
                         return loss
                     self.opt.step(closure)
 
-            y_pred = self.model(x)
-            required_size = y_pred.shape[2:]
-            start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
-            y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
+            # the pipeline diagnostic has to be armed before the forward pass
+            armed = self.pipeline_tap.arm(self.model, x) if (self.pipeline_tap is not None and self.model.training) else False
 
-            loss = self.loss_func(y_pred, y_reduced)
+            # no autograd graph in validation (for the e2e model it is several GiB)
+            with torch.set_grad_enabled(self.model.training):
+                y_pred = self.model(x)
+                required_size = y_pred.shape[2:]
+                start_pos = ((y.shape[2] - required_size[0])//2, (y.shape[3] - required_size[1])//2)
+                y_reduced = y[:, :, start_pos[0]:start_pos[0]+required_size[0], start_pos[1]:start_pos[1]+required_size[1]]
+
+                loss = loss_func(y_pred, y_reduced)
 
             if self.model.training:
                 loss.backward()
+                # plot while .grad still holds the gradients as produced (clipping rescales them)
+                if armed:
+                    self.pipeline_tap.plot(self.model, y_reduced, loss)
+                if self.pipeline_tap is not None:
+                    self.pipeline_tap.advance()
+                if self.clip_grad_norm is not None:
+                    # zero non-finite entries first (an inf total norm would turn them into NaN)
+                    n_nonfinite = 0
+                    for p in self.model.parameters():
+                        if p.grad is not None and not torch.isfinite(p.grad).all():
+                            n_nonfinite += 1
+                            torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+                    # clip_grad_norm_ returns the pre-clip total norm
+                    total_norm = float(clip_grad_norm_(self.model.parameters(), self.clip_grad_norm))
+                    self.clip_stats["steps"] += 1
+                    self.clip_stats["max_norm"] = max(self.clip_stats["max_norm"], total_norm)
+                    if total_norm > self.clip_grad_norm:
+                        self.clip_stats["clipped"] += 1
+                    if n_nonfinite:
+                        self.clip_stats["nonfinite_steps"] += 1
+                        self.clip_stats["nonfinite_tensors"] += n_nonfinite
                 if self.opt.__class__.__name__ == "LBFGS":
                     self.opt.step(closure)
                 else:
@@ -163,10 +226,27 @@ class Solver(object):
 
         # Calculate metrics
         metric_values = {}
-        for metric_name, metric in self.metrics.items():
-            metric_values[metric_name] = metric(y_pred, y_reduced).detach().item()
+        with torch.no_grad():
+            for metric_name, metric in self.metrics.items():
+                metric_values[metric_name] = metric(y_pred, y_reduced).item()
 
         return epoch_loss, metric_values
+
+    def clip_report(self) -> str:
+        """One line on whether gradient clipping did anything this run."""
+        c = self.clip_stats
+        if not c["steps"]:
+            return "gradient clipping: off"
+        pct = c["clipped"] / c["steps"] * 100
+        msg = (f"gradient clipping (threshold {self.clip_grad_norm}): engaged on "
+               f"{c['clipped']}/{c['steps']} steps ({pct:.1f}%), largest pre-clip norm "
+               f"{c['max_norm']:.3e}")
+        if c["nonfinite_steps"]:
+            msg += (f"; non-finite gradients sanitized on {c['nonfinite_steps']} step(s), "
+                    f"{c['nonfinite_tensors']} tensor(s)")
+        else:
+            msg += "; no non-finite gradients"
+        return msg
 
     def save_lr_schedule(self, path: str):
         """ save learning rate history to csv file"""
@@ -192,7 +272,7 @@ class Solver(object):
 
         self.model.eval()
         train_epoch_loss, other_losses_train = self.run_epoch(self.train_dataloader, device) 
-        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device)
+        val_epoch_loss, other_losses_val = self.run_epoch(self.val_dataloader, device, self.val_loss_func)
 
         metrics = {}
         metrics["no_params"] = no_params

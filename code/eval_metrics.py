@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 import torch
 from torch.nn import MSELoss, L1Loss, HuberLoss
@@ -6,10 +7,12 @@ import numpy as np
 from copy import deepcopy
 
 from utils.utils_args import load_yaml, save_yaml
+from preprocessing import subdomain
 from preprocessing.data_init import init_data
 from preprocessing.transforms import NormalizeTransform
 from processing.networks.unetVariants import UNetNoPad2, UNet
 from processing.loss_fcts import SSIMLoss, LinfLoss, PATLoss
+from postprocessing.metric_connectivity import connectivityLoss
 
 def preparation(PATH_current_data: Path, PATH_current_model: Path, PATH_destination: Path, scaling:bool=False):
     # load data for dummyK, step1 (predV)
@@ -59,7 +62,7 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
         collected_metrics[case] = {}
         metrics:dict = {"MSE [phys. unit^2]": MSELoss(), "MAE [phys. unit]": L1Loss(), "Linf [phys. unit]": LinfLoss(), "Huber [phys. unit]": HuberLoss(), "SSIM": SSIMLoss()}
         if output_channels == 1: # some only make sense for Temperature predictions
-            metrics["PAT0.1 [%]"], metrics["PAT1.0 [%]"] = PATLoss(pat_thresholds=[0.1]), PATLoss(pat_thresholds=[1])
+            metrics["MoC [%]"], metrics["PAT0.1 [%]"], metrics["PAT1.0 [%]"] = None, PATLoss(pat_thresholds=[0.1]), PATLoss(pat_thresholds=[1])
         for metric_name, metric in metrics.items():
             print(f"Calculating {metric_name} for {case}",end=" ")
             metrics_values = []
@@ -68,6 +71,12 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
                 inputs, targets = batch
                 outputs = model(inputs).detach()
 
+                if "MoC" in metric_name:
+                    # MoC needs the Material ID on the output region; the inputs can be smaller than the labels,
+                    # so they are centred on their own size (a copy, reverse_normalization works in place)
+                    h, w = outputs.shape[-2:]
+                    i0, j0 = (inputs.shape[-2] - h) // 2, (inputs.shape[-1] - w) // 2
+                    inputs_moc = inputs[..., i0:i0 + h, j0:j0 + w].clone()
                 inputs, targets = crop_to_output_size(inputs, targets, outputs)
                 
                 if metric_name in ["SSIM", "IoU"]:
@@ -76,7 +85,15 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
                     # unnormalize inputs and targets
                     reverse_normalization(norm, inputs, targets, outputs)
                     # calc metrics per output channel
-                    if "PAT" in metric_name:
+                    if "MoC" in metric_name:  # as in eval_metrics.py of AllIn1/LGCNN/benchmarkingdata
+                        for tmp_in in inputs_moc:
+                            norm.reverse(tmp_in, data_type="Inputs")
+                        values = []
+                        for input, output in zip(inputs_moc, outputs):
+                            dict_connectivity = connectivityLoss(input, output, id_mat_ids=info["Inputs"]["Material ID"]["index"], threshold=10.7)
+                            values.append(dict_connectivity["unconnected_percentage"])
+                        values = torch.mean(torch.Tensor(values))
+                    elif "PAT" in metric_name:
                         values = torch.mean(torch.Tensor(metric(outputs, targets).squeeze()))
                     else:
                         values = torch.Tensor([metric(outputs[:,i], targets[:,i]) for i in range(outputs.shape[1])])
@@ -89,6 +106,94 @@ def collect_metrics(PATH_current_data, PATH_current_model, PATH_destination, dat
 
             collected_metrics[case][metric_name] = metrics[metric_name]
     save_yaml(collected_metrics, PATH_destination / f"metrics_paper25_{PATH_current_model.name} {PATH_current_data.name}.yaml")
+    return collected_metrics
+
+def save_test_fields(PATH_current_data, PATH_current_model, PATH_destination, dataloaders, model, norm, info,
+                     scaling: bool = False):
+    """T prediction and label of the test datapoint (one forward, no metrics) for the thesis figures, as
+    npz T_pred / T_label [degC] (float32) and s_pred = sum of the streamline input channels (float16; inputs
+    with streamlines only), cropped to the output region, in tensor order [h, w] like
+    eval_scaling_e2e.save_fields (plot .T with origin lower).
+    scaling: the one-datapoint scaling dataset (loader "val" = datapoint 0, see preparation), written as
+    scaling_fields_<model> <data>.npz."""
+    case, prefix = ("val", "scaling") if scaling else ("test", "test")
+    inputs, targets = next(iter(dataloaders[case]))
+    with torch.no_grad():
+        outputs = model(inputs).detach()
+    # the inputs are smaller than the labels (CNN1's output region), so they are centred on their own size;
+    # crop_to_output_size takes the offset of the labels for both
+    h, w = outputs.shape[-2:]
+    i0, j0 = (inputs.shape[-2] - h) // 2, (inputs.shape[-1] - w) // 2
+    inputs = inputs[..., i0:i0 + h, j0:j0 + w]
+    _, targets = crop_to_output_size(None, targets, outputs)
+    reverse_normalization(norm, inputs, targets, outputs)
+    fields = {"T_pred": outputs[0, 0].numpy().astype(np.float32), "T_label": targets[0, 0].numpy().astype(np.float32)}
+    idx_s = [meta["index"] for name, meta in info["Inputs"].items() if name.startswith("Streamlines")]
+    if idx_s:
+        fields["s_pred"] = inputs[0, idx_s].sum(dim=0).numpy().astype(np.float16)
+    path = PATH_destination / f"{prefix}_fields_{PATH_current_model.name} {PATH_current_data.name}.npz"
+    np.savez_compressed(path, **fields)
+    print(f"Saved {prefix} fields {list(fields)} ({tuple(outputs.shape[-2:])}) to {path}")
+
+def to_e2e_style(collected_metrics, output_channels):
+    """Convert collected metrics to exactly the names/units of the end-to-end evaluation
+    (processing/training_e2e.py: evaluate_e2e), for direct baseline-vs-e2e comparison.
+    Paper mapping: MAE=MAE, RMSE=sqrt(MSE), Huber=Huber, SSIM=SSIM (Linf/PAT are extras)."""
+    styled = {}
+    for case in [c for c in ["train", "val", "test"] if c in collected_metrics]:
+        m = {k: torch.atleast_1d(torch.as_tensor(v)) for k, v in collected_metrics[case].items()}
+        if output_channels == 1:  # temperature model
+            styled[case] = {
+                "MAE [degC]": float(m["MAE [phys. unit]"][0]),
+                "RMSE [degC]": float(m["MSE [phys. unit^2]"][0]) ** 0.5,
+                "Huber [degC]": float(m["Huber [phys. unit]"][0]),
+                "Linf [degC]": float(m["Linf [phys. unit]"][0]),
+                "SSIM": float(m["SSIM"][0]),
+                "PAT0.1 [%]": float(m["PAT0.1 [%]"][0]),
+                "PAT1.0 [%]": float(m["PAT1.0 [%]"][0]),
+            }
+            if "MoC [%]" in m:   # unconnected_percentage of metric_connectivity, in %
+                styled[case]["MoC [%]"] = float(m["MoC [%]"][0])
+        else:  # velocity model - same four metrics the paper's Step-1 row reports, per channel
+            styled[case] = {
+                "MAE vx [m/y]": float(m["MAE [phys. unit]"][0]),
+                "MAE vy [m/y]": float(m["MAE [phys. unit]"][1]),
+                "RMSE vx [m/y]": float(m["MSE [phys. unit^2]"][0]) ** 0.5,
+                "RMSE vy [m/y]": float(m["MSE [phys. unit^2]"][1]) ** 0.5,
+                "Huber vx [m/y]": float(m["Huber [phys. unit]"][0]),
+                "Huber vy [m/y]": float(m["Huber [phys. unit]"][1]),
+                "SSIM vx": float(m["SSIM"][0]),
+                "SSIM vy": float(m["SSIM"][1]),
+            }
+    return styled
+
+
+def plot_collected_metrics(collected_metrics, output_channels, save_path):
+    """Bar chart of all metrics for all evaluated cases (train / val / test), per output channel."""
+    cases = [c for c in ["train", "val", "test"] if c in collected_metrics]
+    metric_names = list(collected_metrics[cases[0]].keys())
+    channel_names = ["vx", "vy"] if output_channels == 2 else ["T"]
+    colors = {"train": "blue", "val": "green", "test": "coral"}
+
+    fig, axes = plt.subplots(1, len(metric_names), figsize=(3.2 * len(metric_names), 4))
+    for ax, metric_name in zip(np.atleast_1d(axes), metric_names):
+        labels, values, bar_colors = [], [], []
+        for case in cases:
+            vals = torch.atleast_1d(collected_metrics[case][metric_name])
+            for ch in range(len(vals)):
+                labels.append(f"{case} {channel_names[ch]}" if len(vals) > 1 else case)
+                values.append(float(vals[ch]))
+                bar_colors.append(colors[case])
+        ax.bar(range(len(values)), values, color=bar_colors)
+        ax.set_xticks(range(len(values)))
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+        ax.set_title(metric_name, fontsize=9)
+        ax.grid(axis="y", linestyle="--", alpha=0.7)
+    fig.suptitle(f"{collected_metrics['model']}  on  {collected_metrics['data']}", fontsize=10)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved metrics plot to {save_path}")
 
 def reverse_normalization(norm, inputs, labels, outputs):
     for tmp_in in inputs:
@@ -233,16 +338,50 @@ def plot_metrics(metrics, title):
 
 if __name__=="__main__":
 
-    # calculate metrics for one model
-    PATH_PREP_DATA = None
-    PATH_MODEL = None
-    PATH_DESTINATION = None
-    SCALING = False #or True, if it should be evaluated on the scaling test data
-    
+    # calculate metrics for one model.
+    # IMPORTANT: the model and the prepared dataset must match in their channels, e.g. (baseline, run from repo root):
+    #   step 1 isolated:  runs/baseline_v + "... inputs_pki outputs_xy"                                    (pki -> v)
+    #   step 3 isolated:  runs/baseline_T + "... inputs_ixydk+s_outer outputs_t"                           (T on simulated v)
+    #   full pipeline:    runs/baseline_T + "... inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45" (T on predicted v)
+    # Override the defaults from the command line, e.g.
+    #   python eval_metrics.py --model runs/baseline_v --data "../datasets_prep/dataset_giant_100hp_varyK inputs_pki outputs_xy"
+    parser = argparse.ArgumentParser(description="Paper-style metrics for one trained model.")
+    parser.add_argument("--model", type=Path,
+                        default=Path("runs/baseline_T"))
+    parser.add_argument("--data", type=Path,
+                        default=Path("../datasets_prep/dataset_giant_100hp_varyK inputs_ixydk+s_outer outputs_t prep_with_baseline_v RK45"))
+    parser.add_argument("--destination", type=Path, default=None, help="default: the model directory")
+    parser.add_argument("--scaling", action="store_true", help="evaluate on the scaling test data")
+    parser.add_argument("--subdomain", action="store_true",
+                        help="evaluate on the hardcoded sub-window only (preprocessing/subdomain.py); "
+                             "match this to the run's own subdomain: setting")
+    parser.add_argument("--fields_only", action="store_true",
+                        help="only write the test T prediction and label to <destination>/test_fields_<model> <data>.npz "
+                             "(save_test_fields), no metrics; with --scaling scaling_fields_<model> <data>.npz")
+    cli = parser.parse_args()
+    subdomain.enable(cli.subdomain)
+    print(subdomain.describe())
+    PATH_PREP_DATA = cli.data
+    PATH_MODEL = cli.model
+    PATH_DESTINATION = cli.destination or PATH_MODEL
+    SCALING = cli.scaling
+
     dataloaders, model, norm, info, args, output_channels = preparation(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, scaling=SCALING)
-    collect_metrics(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, args, output_channels)
+    if cli.fields_only:
+        save_test_fields(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, scaling=SCALING)
+        raise SystemExit
+    collected = collect_metrics(PATH_PREP_DATA, PATH_MODEL, PATH_DESTINATION, dataloaders, model, norm, info, args, output_channels)
+    plot_collected_metrics(collected, output_channels,
+                           PATH_DESTINATION / f"metrics_plot_{PATH_MODEL.name} {PATH_PREP_DATA.name}.png")
+
+    # same metric names/units as the e2e evaluation (measurements_test.yaml / metrics_RUN_x.yaml)
+    styled = to_e2e_style(collected, output_channels)
+    save_yaml(styled, PATH_DESTINATION / f"metrics_e2e-style_{PATH_MODEL.name} {PATH_PREP_DATA.name}.yaml")
+    for case, values in styled.items():
+        print(f"{case}: " + " | ".join(f"{k} {v:.4f}" for k, v in values.items()))
 
     # exemplary use on how to calculate mean, std, min and max for several runs of one set of hyperparameters
-    file_name = lambda run_id: f"metrics_run{run_id}.yaml"
-    metrics = metrics_of_one_model(file_name, n_outputs=1, directory=Path("runs") / "modelA_several_runs", run_ids=[1,2,3,4,5])
-    plot_metrics(metrics, "Title")
+    # (needs a folder with metrics_run<id>.yaml files from repeated trainings - disabled by default)
+    # file_name = lambda run_id: f"metrics_run{run_id}.yaml"
+    # metrics = metrics_of_one_model(file_name, n_outputs=1, directory=Path("runs") / "modelA_several_runs", run_ids=[1,2,3,4,5])
+    # plot_metrics(metrics, "Title")

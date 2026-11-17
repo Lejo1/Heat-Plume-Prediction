@@ -1,0 +1,55 @@
+# CNN1's architecture (as BEST_V); CNN2 differs only in kernel_size (unet_args_T in command_line_arguments.yaml).
+batchsize:
+  values:
+  - 20
+kernel_size:
+  values:
+  - 5
+depth:
+  values:
+  - 4
+init_features:
+  values:
+  - 32
+stride:
+  values:
+  - 1
+dilation:
+  values:
+  - 1
+activation_fct:
+  values:
+  - ReLU
+norm:
+  values:
+  - batchnorm
+repeat_inner:
+  values:
+  - False
+skip_per_dir:
+  values:
+  - 16
+len_box:
+  values:
+  - 256
+inputs:
+  values:
+    - pki
+train_loss:
+  values:
+  # loss L of the temperature term in L(T) + lambda_v * L_v(v): MSE | MAE | Huber
+  - MAE
+v_loss:
+  values:
+  # loss L_v of the velocity term: MSE | MAE | Huber (null = train_loss)
+  - MAE
+bool_cutouts:
+  values:
+  - True
+optimizer_switch:
+  values:
+  - False
+lr:
+  values:
+  # 1e-5: both nets are pretrained, and a full-domain step has batch size 1
+  - 0.00001

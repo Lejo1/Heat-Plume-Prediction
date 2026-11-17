@@ -4,15 +4,22 @@ from typing import List, Union
 from torch import Tensor
 import numpy as np
 
+from preprocessing import subdomain
+
 def read_cla(path:str):
     clas = load_yaml(path / "command_line_arguments.yaml")
-    for path_typed_cla in ["data_prep", "data_raw", "model", "destination"]:
+    for path_typed_cla in ["data_prep", "data_raw", "model", "model_v", "model_T", "destination"]:
         try:
             if clas[path_typed_cla] is not None:
                 clas[path_typed_cla] = Path(clas[path_typed_cla])
         except KeyError:
             continue
     clas["destination"] = path
+
+    # subdomain: true restricts every dataset to one hardcoded window (preprocessing/subdomain.py);
+    # set before any dataset is built
+    subdomain.enable(clas.get("subdomain", False))
+    print(subdomain.describe())
 
     return clas
     
